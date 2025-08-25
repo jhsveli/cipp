@@ -1,33 +1,27 @@
-import json
-import os
-import subprocess
 import sys
 
 from simple_term_menu import TerminalMenu
-
-def exec_json(cmd):
-	string = exec(cmd)
-	return json.loads(string)
-
-def exec(cmd):	
-	my_env = os.environ.copy()
-	my_env['PAGER'] = 'cat'
-	result = subprocess.run(cmd, capture_output=True, text=True, env=my_env, encoding='utf-8')	
-	return result.stdout
-
-exec(['gh', 'config', 'set', 'pager', 'cat'])
+from cmd import exec, exec_json
 
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
 LABEL = "image-updater"
 
+exec(['gh', 'config', 'set', 'pager', 'cat'])
 github_user = exec_json(['gh', 'api', 'user', '--jq', '{name,login}'])
+config_name = exec(['git', 'config', '--global', '--get', 'user.name']).strip()
 github_username = github_user['login']
 github_name = github_user['name']
 
-prs_raw = exec_json(['gh', 'pr', 'list', '-R', REPO, '-l', LABEL, '-S', 'prod in:title review-requested:@me', '--json', 'number,title,updatedAt'])
+def satisfies_criteria(pr):
+	search_content = pr['title'] + pr['body']	
+	
+	return github_name in search_content or github_username in search_content or config_name in search_content or 'dependabot' in pr['body']
+
+
+prs_raw = exec_json(['gh', 'pr', 'list', '-R', REPO, '-l', LABEL, '-S', 'prod in:title review-requested:@me', '--json', 'number,author,title,updatedAt,body'])
 
 # Filter based on handle or name mentioned in pr title
-prs = {str(pr['number']): pr for pr in prs_raw if github_name in pr['title'] or github_username in pr['title']}
+prs = {str(pr['number']): pr for pr in prs_raw if satisfies_criteria(pr)}
 
 if len(prs.keys()) == 0:
 	print(f"0 waiting prod prs found for {github_username} or {github_name}")
@@ -47,7 +41,7 @@ if selected_index is not None and selected_index >= 0:
 	print(f"Approving and merging '{pr_to_merge['number']}'...", end="")
 	exec(['gh', 'pr', 'review', '--approve', str(pr_to_merge['number']), '-R', REPO])
 	print("approved...merging...", end="" )
-	exec(['gh', 'pr', 'merge', '-m', '-R', REPO, str(pr_to_merge['number'])])
+	exec(['gh', 'pr', 'merge', '-m', '--auto', '-R', REPO, str(pr_to_merge['number'])])
 	print("Done!")
 else:
 	print("Quitting..")
