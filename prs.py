@@ -21,7 +21,6 @@ def pr_menu():
 	prs_raw = exec_json(['gh', 'api', 'graphql', '-f', f"query={pr_query}", '--jq', jq])
 
 	prs = {str(pr['id']): pr for pr in prs_raw}
-	print(list(prs.values())[0]['isBot'])
 
 	if len(prs.keys()) == 0:
 		print(f"{bcolors.WARNING}0 waiting prs{bcolors.ENDC} found")
