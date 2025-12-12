@@ -4,7 +4,7 @@ from simple_term_menu import TerminalMenu
 from cmd import exec, exec_json
 
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
-LABEL = "image-updater"
+AUTHOR = "aws-plattform-image-updater"
 
 exec(['gh', 'config', 'set', 'pager', 'cat'])
 github_user = exec_json(['gh', 'api', 'user', '--jq', '{name,login}'])
@@ -15,14 +15,19 @@ github_name = github_user['name']
 def prod_menu():
 	def satisfies_criteria(pr):
 		search_content = pr['title'] + pr['body']	
+		author_login = pr['author']['login']
 		
-		return github_name in search_content or github_username in search_content or config_name in search_content or 'dependabot' in pr['body']
+		return github_name in search_content or github_username in search_content or config_name in search_content or 'dependabot' in pr['body'] or AUTHOR in author_login
+
+	def checks_complete(pr):
+		result = [check['status'] == 'COMPLETED' and check['conclusion'] in ['SUCCESS', 'SKIPPED'] for check in pr['statusCheckRollup']]
+		return all(result)
 
 
-	prs_raw = exec_json(['gh', 'pr', 'list', '-R', REPO, '-l', LABEL, '-S', 'prod in:title review-requested:@me', '--json', 'id,number,author,title,updatedAt,body'])
+	prs_raw = exec_json(['gh', 'pr', 'list', '-R', REPO, '-S', 'prod in:title review-requested:@me', '--json', 'id,number,author,title,updatedAt,body,statusCheckRollup'])
 
 	# Filter based on handle or name mentioned in pr title
-	prs = {str(pr['id']): pr for pr in prs_raw if satisfies_criteria(pr)}
+	prs = {str(pr['id']): pr for pr in prs_raw if satisfies_criteria(pr) and checks_complete(pr)}
 
 	if len(prs.keys()) == 0:
 		print(f"0 waiting prod prs found for {github_username} or {github_name}")
@@ -56,7 +61,7 @@ def prod_menu():
 		print(f"Approving and merging '{pr_to_merge['number']}'... ", end='', flush=True)
 		exec(['gh', 'pr', 'review', '--approve', str(pr_to_merge['number']), '-R', REPO])
 		print("Approved! Now merging... ", end='', flush=True)
-		exec(['gh', 'pr', 'merge', '-m', '--auto', '-R', REPO, str(pr_to_merge['number'])])
+		exec(['gh', 'pr', 'merge', '-s', '-R', REPO, str(pr_to_merge['number'])])
 		print("Done!\n")
 		approved_prs.add(pr_to_merge['id'])
 	else:
