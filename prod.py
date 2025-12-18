@@ -5,11 +5,18 @@ import json
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
 AUTHOR = "aws-plattform-image-updater"
 
-# Sometimes, if git config name differs from github user full name, The PRs are tagged with either names, must check for both. eg Jorgen Tu Sveli and Jørgen Tu Sveli
+# Sometimes, if git config name differs from github user full name,
+# The PRs can be tagged with either names, must check for both.
+# eg Jorgen Tu Sveli and Jørgen Tu Sveli
 config_name = exec(['git', 'config', '--global', '--get', 'user.name']).strip()
 
 def prod_menu():
 	response = exec_json(['gh', 'api', 'graphql', '-f', f"query={pr_query}", '--jq', jq])
+
+	if 'errors' in response and len(response['errors']) > 0:
+		print(f"Query returned {len(response['errors'])} errors. First was:\n{response['errors'][0]['message']})")
+		quit()
+
 	github_username = response['user']['login']
 	github_name = response['user']['name']
 
@@ -98,7 +105,7 @@ pr_query = """{
 		  }
 		}
 	}
-}"""
+"""
 
 jq = """
 {

@@ -18,10 +18,13 @@ def pr_menu():
 
 	print("Finding open prs with 🟢 checks..\n")
 
-	prs_raw = exec_json(['gh', 'api', 'graphql', '-f', f"query={pr_query}", '--jq', jq])
-	print(json.dumps(prs_raw))
+	response = exec_json(['gh', 'api', 'graphql', '-f', f"query={pr_query}", '--jq', jq])
 
-	prs = {str(pr['id']): pr for pr in prs_raw}
+	if 'errors' in response and len(response['errors']) > 0:
+		print(f"Query returned {len(response['errors'])} errors. First was:\n{response['errors'][0]['message']})")
+		quit()
+
+	prs = {str(pr['id']): pr for pr in response}
 
 	if len(prs.keys()) == 0:
 		print(f"{bcolors.WARNING}0 waiting prs{bcolors.ENDC} found")
