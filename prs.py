@@ -19,6 +19,7 @@ def pr_menu():
 	print("Finding open prs with 🟢 checks..\n")
 
 	prs_raw = exec_json(['gh', 'api', 'graphql', '-f', f"query={pr_query}", '--jq', jq])
+	print(json.dumps(prs_raw))
 
 	prs = {str(pr['id']): pr for pr in prs_raw}
 
@@ -118,12 +119,11 @@ pr_query = """{
             nodes {
               commit {
                 statusCheckRollup {
-	                state
-	              }
-	            }
+				  state
+				}
 	          }
-	        }  
-          }
+	        }
+	      }  
         }
       }
     }
