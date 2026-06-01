@@ -6,7 +6,7 @@ from typing import Callable
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.widgets import Footer, Header, OptionList, Static, TabbedContent, TabPane
+from textual.widgets import Header, OptionList, Static, TabbedContent, TabPane
 from textual.widgets.option_list import Option
 
 
@@ -50,6 +50,7 @@ class PRMenuApp(App):
 	#footer-row { height: 1; }
 	#breadcrumb { width: 1fr; padding: 0 1; color: $accent; }
 	#countdown { width: auto; padding: 0 1; color: $text-muted; text-style: italic; }
+	#hotkeys { height: 1; padding: 0 1; background: $accent 20%; color: $text; }
 	OptionList { height: 1fr; }
 	"""
 
@@ -89,7 +90,7 @@ class PRMenuApp(App):
 		with Horizontal(id="footer-row"):
 			yield Static("Loading…", id="breadcrumb")
 			yield Static("", id="countdown")
-		yield Footer()
+		yield Static("", id="hotkeys")
 
 	def on_mount(self) -> None:
 		self.title = self._tabs[self._initial_tab].config.title
@@ -98,6 +99,7 @@ class PRMenuApp(App):
 			self.set_interval(self._poll_seconds, partial(self._refresh_tab, i))
 		self.set_interval(1, self._tick_countdown)
 		self._render_countdown()
+		self._render_hotkeys()
 
 	def _active_index(self) -> int:
 		active = self.query_one(TabbedContent).active
@@ -113,8 +115,15 @@ class PRMenuApp(App):
 	def _render_countdown(self) -> None:
 		ts = self._tabs[self._active_index()]
 		self.query_one("#countdown", Static).update(
-			f"Updating in {ts.seconds_until_refresh}s…"
+			f"{len(ts.prs)} PR(s) · Updating in {ts.seconds_until_refresh}s…"
 		)
+
+	def _render_hotkeys(self) -> None:
+		ts = self._tabs[self._active_index()]
+		key_label = {"enter": "↵", "escape": "esc"}
+		parts = [f"[b]{key_label.get(a.key, a.key)}[/b] {a.label}" for a in ts.config.actions]
+		parts.extend(["[b]←/→[/b] Switch tab", "[b]q[/b] Quit"])
+		self.query_one("#hotkeys", Static).update("  ".join(parts))
 
 	def _refresh_tab(self, i: int) -> None:
 		self.run_worker(
@@ -175,13 +184,10 @@ class PRMenuApp(App):
 				self._update_status("")
 
 		added = len(new_ids - old_ids)
-		name = ts.config.name
-		if added and ts.prs and old_ids:
-			self._set_breadcrumb(f"[{name}] refreshed: +{added} PR(s)")
-		elif not old_ids:
-			self._set_breadcrumb(f"[{name}] loaded {len(visible)} PR(s)")
-		else:
-			self._set_breadcrumb(f"[{name}] refreshed: {len(visible)} PR(s)")
+		if added and old_ids:
+			self._set_breadcrumb(f"[{ts.config.name}] +{added} new PR(s)")
+		if i == self._active_index():
+			self._render_countdown()
 
 	def _tab_index_for_option_list(self, option_list_id: str | None) -> int | None:
 		if not option_list_id:
@@ -225,6 +231,7 @@ class PRMenuApp(App):
 		else:
 			self._update_status("")
 		self._render_countdown()
+		self._render_hotkeys()
 		option_list.focus()
 
 	def action_previous_tab(self) -> None:
