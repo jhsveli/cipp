@@ -1,9 +1,0 @@
-#!/bin/bash
-
-if ! command -v gh 2>&1 >/dev/null
-then
-    echo "GitHub cli 'gh' could not be found"
-    exit 1
-fi
-
-(cd $DEVENV_DIR/src && pipenv run python3 menu.py "$@")

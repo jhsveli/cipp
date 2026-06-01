@@ -1,12 +1,11 @@
 import argparse
 
-import prod
-import prs
-from pr_menu import run_pr_menu
+from . import prod, prs
+from .pr_menu import run_pr_menu
 
 
 def main():
-	parser = argparse.ArgumentParser()
+	parser = argparse.ArgumentParser(prog="seon")
 	parser.add_argument("--tab", choices=["prod", "reviews"], default="prod")
 	args = parser.parse_args()
 	initial_tab = 0 if args.tab == "prod" else 1

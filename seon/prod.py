@@ -1,5 +1,5 @@
-from cmd import exec, exec_json
-from pr_menu import ActionResult, ActionSpec, TabConfig
+from .cmd import exec, exec_json
+from .pr_menu import ActionResult, ActionSpec, TabConfig
 
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
 AUTHOR = "aws-plattform-image-updater"
