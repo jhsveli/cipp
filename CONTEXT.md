@@ -1,0 +1,28 @@
+# Context
+
+Glossary of the language used in this codebase. Update inline as terms get pinned down.
+
+## Terms
+
+### PR
+A GitHub pull request, as returned by the `gh` CLI. Each PR carries an `id` (GraphQL node ID), `number`, `title`, `body`, `repository`, `author`, `createdAt`, and `checkStatus`.
+
+### Tab
+One source of PRs (e.g. *Reviews*, *Production*). A tab owns a fetch query, a status-bar formatter, and a set of [[Action]]s. Modeled by `TabConfig` and held at runtime in `TabState`.
+
+### Action
+A keystroke-bound operation on a single PR — *Approve*, *Approve + merge*, *Open in browser*. Modeled by `ActionSpec`. Returns `ActionResult.REMOVE` (the PR should leave the list) or `ActionResult.KEEP` (the PR stays).
+
+### Acting
+A row's state while one of its [[Action]]s is in flight. Per-row, per-PR — distinct from *loading* (the tab is fetching the list) and from any tab-wide busy state. Visualised by a right-aligned spinner + the action's label inside the row. Tracked by `TabState.acting_pr_ids`.
+
+The action key is rejected on a row that is already acting; this is the row-level lock that prevents double-firing.
+
+### Finishing
+A row's state immediately after an [[Acting]] action that returned `REMOVE` succeeded. Visualised as a right-aligned `✓ Done` for 2 seconds, then a brief dim, then the row is removed from the list. Tracked by `TabState.finishing_pr_ids`. Action keys remain locked while finishing.
+
+### Loading
+A tab is fetching its PR list. Visualised by a spinner in the countdown widget at the top of the status frame. Tracked by `_loading_tabs` on the app. Distinct from [[Acting]] / [[Finishing]], which are per-row.
+
+### Refresh pause
+While any row in a tab is [[Acting]] or [[Finishing]], that tab's countdown does not tick down and any in-flight fetch result is dropped on arrival. The pause prevents a refetch from rebuilding the option list and wiping the row's spinner / `✓ Done` state. Refreshes resume once the tab has no acting or finishing rows.

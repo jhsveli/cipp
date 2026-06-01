@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
+from rich.table import Table
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -37,7 +39,8 @@ class TabState:
 	actions_by_key: dict[str, ActionSpec]
 	prs: list[dict] = field(default_factory=list)
 	removed_ids: set[str] = field(default_factory=set)
-	busy: bool = False
+	acting_pr_ids: dict[str, str] = field(default_factory=dict)
+	finishing_pr_ids: set[str] = field(default_factory=set)
 	seconds_until_refresh: int = 0
 
 
@@ -120,16 +123,24 @@ class PRMenuApp(App):
 		for i, ts in enumerate(self._tabs):
 			if i in self._loading_tabs:
 				continue
+			if ts.acting_pr_ids or ts.finishing_pr_ids:
+				continue
 			ts.seconds_until_refresh -= 1
 			if ts.seconds_until_refresh <= 0:
 				self._refresh_tab(i)
 		self._render_countdown()
 
 	def _tick_spinner(self) -> None:
-		if not self._loading_tabs:
+		any_acting = any(ts.acting_pr_ids for ts in self._tabs)
+		if not self._loading_tabs and not any_acting:
 			return
 		self._spinner_frame = (self._spinner_frame + 1) % len(self.SPINNER_FRAMES)
-		self._render_countdown()
+		if self._loading_tabs:
+			self._render_countdown()
+		if any_acting:
+			for i, ts in enumerate(self._tabs):
+				for pr_id in list(ts.acting_pr_ids.keys()):
+					self._refresh_row(i, pr_id)
 
 	def _render_countdown(self) -> None:
 		i = self._active_index()
@@ -143,6 +154,34 @@ class PRMenuApp(App):
 		countdown = self.query_one("#countdown", Static)
 		countdown.update(text)
 		countdown.set_class(running, "running")
+
+	def _row_prompt(self, ts: TabState, pr: dict, dim: bool = False):
+		left = f"{pr['number']:>6} {pr['title']}"
+		pr_id = pr["id"]
+		if pr_id in ts.acting_pr_ids:
+			label = ts.acting_pr_ids[pr_id]
+			right = f"{self.SPINNER_FRAMES[self._spinner_frame]} {label}"
+		elif pr_id in ts.finishing_pr_ids:
+			right = "✓ Done"
+		else:
+			right = ""
+		grid = Table.grid(expand=True)
+		grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+		grid.add_column(justify="right", no_wrap=True)
+		style = "dim" if dim else ""
+		grid.add_row(Text(left, style=style), Text(right, style=style))
+		return grid
+
+	def _refresh_row(self, i: int, pr_id: str, dim: bool = False) -> None:
+		ts = self._tabs[i]
+		pr = next((p for p in ts.prs if p["id"] == pr_id), None)
+		if pr is None:
+			return
+		option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
+		try:
+			option_list.replace_option_prompt(pr_id, self._row_prompt(ts, pr, dim=dim))
+		except Exception:
+			pass
 
 	def _render_hotkeys(self) -> None:
 		key_label = {"enter": "↵", "escape": "esc"}
@@ -183,15 +222,11 @@ class PRMenuApp(App):
 		if i == self._active_index():
 			self._render_countdown()
 
-	def _debounce_refresh(self, i: int, seconds: int) -> None:
-		ts = self._tabs[i]
-		if ts.seconds_until_refresh < seconds:
-			ts.seconds_until_refresh = seconds
-			if i == self._active_index():
-				self._render_countdown()
-
 	def _apply_prs(self, i: int, prs: list[dict]) -> None:
 		ts = self._tabs[i]
+		if ts.acting_pr_ids or ts.finishing_pr_ids:
+			self._mark_loading(i, False)
+			return
 		visible = [pr for pr in prs if pr["id"] not in ts.removed_ids]
 		old_ids = {pr["id"] for pr in ts.prs}
 		new_ids = {pr["id"] for pr in visible}
@@ -210,7 +245,7 @@ class PRMenuApp(App):
 		ts.prs = visible
 		option_list.clear_options()
 		option_list.add_options(
-			[Option(f"{pr['number']:>6} {pr['title']}", id=pr["id"]) for pr in visible]
+			[Option(self._row_prompt(ts, pr), id=pr["id"]) for pr in visible]
 		)
 
 		if visible:
@@ -316,22 +351,22 @@ class PRMenuApp(App):
 
 	def _run_action_on_tab(self, i: int, index: int, key: str) -> None:
 		ts = self._tabs[i]
-		if ts.busy:
-			return
 		if not (0 <= index < len(ts.prs)):
 			return
 		spec = ts.actions_by_key.get(key)
 		if spec is None:
 			return
 		pr = ts.prs[index]
-		ts.busy = True
-		self._debounce_refresh(i, 10)
-		self._set_breadcrumb(f"{spec.label} #{pr['number']}…", i, running=True)
+		pr_id = pr["id"]
+		if pr_id in ts.acting_pr_ids or pr_id in ts.finishing_pr_ids:
+			return
+		ts.acting_pr_ids[pr_id] = spec.label
+		self._refresh_row(i, pr_id)
 		self.run_worker(
 			lambda: self._invoke(i, spec, pr),
 			thread=True,
 			exclusive=True,
-			group=f"action-{i}",
+			group=f"action-{i}-{pr_id}",
 		)
 
 	def _invoke(self, i: int, spec: ActionSpec, pr: dict) -> None:
@@ -346,27 +381,49 @@ class PRMenuApp(App):
 		self, i: int, pr: dict, spec: ActionSpec, result: ActionResult
 	) -> None:
 		ts = self._tabs[i]
-		ts.busy = False
+		pr_id = pr["id"]
+		ts.acting_pr_ids.pop(pr_id, None)
 		if result == ActionResult.REMOVE:
-			ts.removed_ids.add(pr["id"])
-			ts.prs = [p for p in ts.prs if p["id"] != pr["id"]]
-			option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
-			option_list.remove_option(pr["id"])
-			if ts.prs:
-				new_index = min(
-					option_list.highlighted if option_list.highlighted is not None else 0,
-					len(ts.prs) - 1,
-				)
-				option_list.highlighted = new_index
-				if i == self._active_index():
-					self._update_status(ts.config.status_bar(ts.prs[new_index]))
-			elif i == self._active_index():
-				self._update_status("")
-		self._set_breadcrumb(f"{spec.label} #{pr['number']} ✓", i)
+			ts.finishing_pr_ids.add(pr_id)
+			self._refresh_row(i, pr_id)
+			self.set_timer(2.0, lambda: self._dim_finishing(i, pr_id))
+			self.set_timer(2.3, lambda: self._remove_finished(i, pr_id))
+		else:
+			self._refresh_row(i, pr_id)
+
+	def _dim_finishing(self, i: int, pr_id: str) -> None:
+		if pr_id not in self._tabs[i].finishing_pr_ids:
+			return
+		self._refresh_row(i, pr_id, dim=True)
+
+	def _remove_finished(self, i: int, pr_id: str) -> None:
+		ts = self._tabs[i]
+		if pr_id not in ts.finishing_pr_ids:
+			return
+		ts.finishing_pr_ids.discard(pr_id)
+		ts.removed_ids.add(pr_id)
+		ts.prs = [p for p in ts.prs if p["id"] != pr_id]
+		option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
+		try:
+			option_list.remove_option(pr_id)
+		except Exception:
+			pass
+		if ts.prs:
+			new_index = min(
+				option_list.highlighted if option_list.highlighted is not None else 0,
+				len(ts.prs) - 1,
+			)
+			option_list.highlighted = new_index
+			if i == self._active_index():
+				self._update_status(ts.config.status_bar(ts.prs[new_index]))
+		elif i == self._active_index():
+			self._update_status("")
 
 	def _on_action_error(self, i: int, pr: dict, error: Exception) -> None:
 		ts = self._tabs[i]
-		ts.busy = False
+		pr_id = pr["id"]
+		ts.acting_pr_ids.pop(pr_id, None)
+		self._refresh_row(i, pr_id)
 		self._set_breadcrumb(f"#{pr['number']} failed: {error}", i)
 
 
