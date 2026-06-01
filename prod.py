@@ -49,7 +49,7 @@ pr_query = """{
 		login
 		name
 	}
-	search(query: "type:pr state:open repo:sparebank1utvikling/app-configrepo-sb1u prod in:title review-requested:@me", type: ISSUE, first: 100) {
+	search(query: "type:pr state:open repo:sparebank1utvikling/app-configrepo-sb1u prod in:title review-requested:@me sort:created-desc", type: ISSUE, first: 100) {
 		edges {
 		  node {
 			... on PullRequest {
@@ -57,6 +57,7 @@ pr_query = """{
 			  id
 			  number
 			  title
+			  createdAt
 			  updatedAt
 			  body
 			  state

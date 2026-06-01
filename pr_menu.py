@@ -88,7 +88,7 @@ class PRMenuApp(App):
 					yield OptionList(id=ts.option_list_id)
 		yield Static("", id="status")
 		with Horizontal(id="footer-row"):
-			yield Static("Loading…", id="breadcrumb")
+			yield Static("", id="breadcrumb")
 			yield Static("", id="countdown")
 		yield Static("", id="hotkeys")
 
@@ -135,6 +135,7 @@ class PRMenuApp(App):
 
 	def _fetch_tab(self, i: int) -> None:
 		self.call_from_thread(self._reset_countdown, i)
+		self.call_from_thread(self._set_breadcrumb, f"[{self._tabs[i].config.name}] loading…")
 		try:
 			prs = self._tabs[i].config.fetch()
 		except Exception as e:
@@ -155,6 +156,7 @@ class PRMenuApp(App):
 
 		if old_ids == new_ids and ts.prs:
 			ts.prs = visible
+			self._set_breadcrumb("")
 			return
 
 		option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
@@ -186,6 +188,8 @@ class PRMenuApp(App):
 		added = len(new_ids - old_ids)
 		if added and old_ids:
 			self._set_breadcrumb(f"[{ts.config.name}] +{added} new PR(s)")
+		else:
+			self._set_breadcrumb("")
 		if i == self._active_index():
 			self._render_countdown()
 

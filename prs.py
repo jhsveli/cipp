@@ -44,7 +44,7 @@ def open_in_browser(pr):
 
 
 pr_query = """{
-  search(query: "type:pr state:open review-requested:@me -label:image-updater", type: ISSUE, first: 100) {
+  search(query: "type:pr state:open review-requested:@me -label:image-updater sort:created-desc", type: ISSUE, first: 100) {
     issueCount
     pageInfo {
       endCursor
@@ -57,6 +57,7 @@ pr_query = """{
           id
           number
           title
+          createdAt
           updatedAt
           body
           state
