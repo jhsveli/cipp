@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from functools import partial
 from typing import Callable
 
 from textual.app import App, ComposeResult
@@ -106,7 +105,6 @@ class PRMenuApp(App):
 		self.title = self._tabs[self._initial_tab].config.title
 		for i in range(len(self._tabs)):
 			self._refresh_tab(i)
-			self.set_interval(self._poll_seconds, partial(self._refresh_tab, i))
 		self.set_interval(1, self._tick_countdown)
 		self.set_interval(0.1, self._tick_spinner)
 		self._render_countdown()
@@ -119,8 +117,12 @@ class PRMenuApp(App):
 		return 0
 
 	def _tick_countdown(self) -> None:
-		for ts in self._tabs:
-			ts.seconds_until_refresh = max(0, ts.seconds_until_refresh - 1)
+		for i, ts in enumerate(self._tabs):
+			if i in self._loading_tabs:
+				continue
+			ts.seconds_until_refresh -= 1
+			if ts.seconds_until_refresh <= 0:
+				self._refresh_tab(i)
 		self._render_countdown()
 
 	def _tick_spinner(self) -> None:
@@ -180,6 +182,13 @@ class PRMenuApp(App):
 		self._tabs[i].seconds_until_refresh = self._poll_seconds
 		if i == self._active_index():
 			self._render_countdown()
+
+	def _debounce_refresh(self, i: int, seconds: int) -> None:
+		ts = self._tabs[i]
+		if ts.seconds_until_refresh < seconds:
+			ts.seconds_until_refresh = seconds
+			if i == self._active_index():
+				self._render_countdown()
 
 	def _apply_prs(self, i: int, prs: list[dict]) -> None:
 		ts = self._tabs[i]
@@ -316,6 +325,7 @@ class PRMenuApp(App):
 			return
 		pr = ts.prs[index]
 		ts.busy = True
+		self._debounce_refresh(i, 10)
 		self._set_breadcrumb(f"{spec.label} #{pr['number']}…", i, running=True)
 		self.run_worker(
 			lambda: self._invoke(i, spec, pr),
