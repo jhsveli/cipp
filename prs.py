@@ -1,97 +1,60 @@
 from cmd import exec, exec_json
-import json
+from pr_menu import ActionResult, ActionSpec, run_pr_menu
 
-from simple_term_menu import TerminalMenu
 
-from pprint import pprint
+CHECK_EMOJI = {
+	'SUCCESS': '🟢',
+	'SKIPPED': '🟡',
+	'FAILURE': '🔴',
+}
 
-class bcolors:
-    HEADER = '\x1b[7;30;47m'
-    OKBLUE = '\x1b[7;30;44m'
-    OKCYAN = '\x1b[7;3;45m'
-    OKGREEN = '\x1b[7;30;42m'
-    WARNING = '\x1b[7;30;43m'
-    FAIL = '\x1b[1;31;40m'
-    ENDC = '\x1b[0m'
 
-def pr_menu():	
-
-	print("Finding open prs with 🟢 checks..\n")
-
+def fetch_prs():
 	response = exec_json(['gh', 'api', 'graphql', '-f', f"query={pr_query}", '--jq', jq])
 
-	if 'errors' in response and len(response['errors']) > 0:
-		print(f"Query returned {len(response['errors'])} errors. First was:\n{response['errors'][0]['message']})")
-		quit()
+	if isinstance(response, dict) and 'errors' in response and len(response['errors']) > 0:
+		raise RuntimeError(
+			f"Query returned {len(response['errors'])} errors. First was: {response['errors'][0]['message']}"
+		)
 
-	prs = {str(pr['id']): pr for pr in response}
+	return response
 
-	if len(prs.keys()) == 0:
-		print(f"{bcolors.WARNING}0 waiting prs{bcolors.ENDC} found")
-		quit()
-	else:
-		print(f"Found {bcolors.OKBLUE}{len(prs.keys())}{bcolors.ENDC} prs. Select a pr to {bcolors.OKGREEN}[a]pprove{bcolors.ENDC}, {bcolors.OKCYAN}[m]erge{bcolors.ENDC} or {bcolors.OKBLUE}[o]open{bcolors.ENDC} in browser:")
 
-	def render_statusbar(menuitem):	
-		pr = prs[menuitems_to_id[menuitem]]
-		emoji = '🤖' if pr['isBot'] == 'true' else '🧬'
+def status_bar(pr):
+	emoji = '🤖' if pr['isBot'] else '🧬'
+	checkji = CHECK_EMOJI.get(pr['checkStatus'], '❔')
+	return f"In: {pr['repository']['name']} | By: {emoji} {pr['author']} | On: {pr['createdAt']} | Checks: {checkji}"
 
-		match pr['checkStatus']:
-			case 'SUCCESS':
-				checkji = '🟢'
-			case 'SKIPPED':
-				checkji = '🟡'
-			case 'FAILURE':
-				 checkji = '🔴'
-			case _:
-				checkji = '❔'
 
-		return f"In: {pr['repository']['name']} | By: {emoji} {pr['author']} | On: {pr['createdAt']} | Checks: {checkji}"
+def approve(pr):
+	exec(['gh', 'pr', 'review', '--approve', str(pr['number']), '-R', pr['repository']['nameWithOwner']])
+	return ActionResult.REMOVE
 
-	approved_prs = set()
 
-	while True:
-		menuitems_to_id = {f"{pr['number']:>6} {pr['title']}": key for key, pr in prs.items() if key not in approved_prs}
-		menuchoices = list(menuitems_to_id.keys())
-		
-		if len(menuchoices) == 0:
-			print("No more PRs")
-			break
-		
-		menu = TerminalMenu(
-			menuchoices,
-			title = '',	
-			accept_keys = ('enter', 'a', 'm', 'o'),
-			status_bar = render_statusbar
-			)
-		selected_index = menu.show()
+def approve_and_merge(pr):
+	repo = pr['repository']['nameWithOwner']
+	exec(['gh', 'pr', 'review', '--approve', str(pr['number']), '-R', repo])
+	exec(['gh', 'pr', 'merge', '-s', '-R', repo, str(pr['number'])])
+	return ActionResult.REMOVE
 
-		if selected_index is None or selected_index < 0:
-			break
 
-		accept_key_pressed = menu.chosen_accept_key
-		pr_to_merge = prs[menuitems_to_id[menuchoices[selected_index]]]
-		
-		pr_number = pr_to_merge['number']
-		pr_repo = pr_to_merge['repository']['nameWithOwner']
+def open_in_browser(pr):
+	exec(['gh', 'pr', 'view', '--web', '-R', pr['repository']['nameWithOwner'], str(pr['number'])])
+	return ActionResult.KEEP
 
-		if accept_key_pressed in ['a', 'm']:
-			print(f"Approving '{pr_to_merge['number']}'... ", end="", flush=True)
-			exec(['gh', 'pr', 'review', '--approve', str(pr_number), '-R', pr_repo])
-			
-		if accept_key_pressed == 'm':
-			print(f"{bcolors.OKGREEN}Approved{bcolors.ENDC}! Now merging... ", end="", flush=True)
-			exec(['gh', 'pr', 'merge', '-s', '-R', pr_repo, str(pr_number)])
-			print(f"{bcolors.OKCYAN}Merged{bcolors.ENDC}!\n")
-			approved_prs.add(pr_to_merge['id'])
-		elif accept_key_pressed == 'a':			
-			approved_prs.add(pr_to_merge['id'])
-			print(f"{bcolors.OKGREEN}Approved{bcolors.ENDC}!\n")
-		elif accept_key_pressed == 'o':
-			print(f"Opening PR {pr_number} in {bcolors.OKBLUE}browser{bcolors.ENDC}!", flush=True)
-			exec(['gh', 'pr', 'view', '--web', '-R', pr_repo, str(pr_number)])
 
-	print("Quitting..")
+def pr_menu():
+	run_pr_menu(
+		title="Open PRs awaiting review",
+		fetch=fetch_prs,
+		actions=[
+			ActionSpec(key="a", label="Approve", handler=approve),
+			ActionSpec(key="m", label="Approve + merge", handler=approve_and_merge),
+			ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
+		],
+		status_bar=status_bar,
+	)
+
 
 pr_query = """{
   search(query: "type:pr state:open review-requested:@me -label:image-updater", type: ISSUE, first: 100) {
@@ -110,14 +73,14 @@ pr_query = """{
           updatedAt
           body
           state
-          repository { 
+          repository {
           	nameWithOwner
-          	name 
+          	name
           }
           author {
             login
             __typename
-          }          
+          }
           commits(last: 1) {
             nodes {
               commit {
@@ -126,7 +89,7 @@ pr_query = """{
 				}
 	          }
 	        }
-	      }  
+	      }
         }
       }
     }

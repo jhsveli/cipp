@@ -1,6 +1,5 @@
-from simple_term_menu import TerminalMenu
 from cmd import exec, exec_json
-import json
+from pr_menu import ActionResult, ActionSpec, run_pr_menu
 
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
 AUTHOR = "aws-plattform-image-updater"
@@ -10,12 +9,14 @@ AUTHOR = "aws-plattform-image-updater"
 # eg Jorgen Tu Sveli and Jørgen Tu Sveli
 config_name = exec(['git', 'config', '--global', '--get', 'user.name']).strip()
 
-def prod_menu():
+
+def fetch_prs():
 	response = exec_json(['gh', 'api', 'graphql', '-f', f"query={pr_query}", '--jq', jq])
 
 	if 'errors' in response and len(response['errors']) > 0:
-		print(f"Query returned {len(response['errors'])} errors. First was:\n{response['errors'][0]['message']})")
-		quit()
+		raise RuntimeError(
+			f"Query returned {len(response['errors'])} errors. First was: {response['errors'][0]['message']}"
+		)
 
 	github_username = response['user']['login']
 	github_name = response['user']['name']
@@ -23,49 +24,34 @@ def prod_menu():
 	def satisfies_criteria(pr):
 		search_content = pr['title'] + pr['body']
 		author_login = pr['author']
-
-		return github_name in search_content or github_username in search_content or config_name in search_content or 'dependabot' in pr['body'] or AUTHOR in author_login
-
-	# Filter based on handle or name mentioned in pr title
-	prs = {str(pr['id']): pr for pr in response['prs'] if satisfies_criteria(pr) and pr['checkStatus'] == 'SUCCESS'}
-
-	if len(prs.keys()) == 0:
-		print(f"0 waiting prod prs found for {github_username} or {github_name}")
-		quit()
-
-	def render_statusbar(menuitem):
-			pr = prs[menuitems_to_id[menuitem]]
-			return pr['body']
-
-	approved_prs = set()
-
-	while True:
-		menuitems_to_id = {f"{pr['number']:>6} {pr['title']}": key for key, pr in prs.items() if key not in approved_prs}
-		menuchoices = list(menuitems_to_id.keys())
-
-		if len(menuchoices) == 0:
-			print("No more PRs - ", end='')
-			break
-		
-		menu = TerminalMenu(
-			menuchoices,
-			title = "Pick an image update in prod for approval:",
-			status_bar = render_statusbar
+		return (
+			github_name in search_content
+			or github_username in search_content
+			or config_name in search_content
+			or 'dependabot' in pr['body']
+			or AUTHOR in author_login
 		)
 
-		selected_index = menu.show()
+	return [
+		pr for pr in response['prs']
+		if satisfies_criteria(pr) and pr['checkStatus'] == 'SUCCESS'
+	]
 
-		if selected_index is None or selected_index < 0:
-			break
-		pr_to_merge = prs[menuitems_to_id[menuchoices[selected_index]]]
-		print(f"Approving and merging '{pr_to_merge['number']}'... ", end='', flush=True)
-		exec(['gh', 'pr', 'review', '--approve', str(pr_to_merge['number']), '-R', REPO])
-		print("Approved! Now merging... ", end='', flush=True)
-		exec(['gh', 'pr', 'merge', '-s', '-R', REPO, str(pr_to_merge['number'])])
-		print("Done!\n")
-		approved_prs.add(pr_to_merge['id'])
-	else:
-		print("Quitting..")
+
+def approve_and_merge(pr):
+	exec(['gh', 'pr', 'review', '--approve', str(pr['number']), '-R', REPO])
+	exec(['gh', 'pr', 'merge', '-s', '-R', REPO, str(pr['number'])])
+	return ActionResult.REMOVE
+
+
+def prod_menu():
+	run_pr_menu(
+		title="Pick an image update in prod for approval",
+		fetch=fetch_prs,
+		actions=[ActionSpec(key="enter", label="Approve + merge", handler=approve_and_merge)],
+		status_bar=lambda pr: pr['body'],
+	)
+
 
 pr_query = """{
 	viewer {
@@ -83,14 +69,14 @@ pr_query = """{
 			  updatedAt
 			  body
 			  state
-			  repository { 
+			  repository {
 				nameWithOwner
-				name 
+				name
 			  }
 			  author {
 				login
 				__typename
-			  }          
+			  }
 			  commits(last: 1) {
 				nodes {
 				  commit {
@@ -99,7 +85,7 @@ pr_query = """{
 					  }
 					}
 				  }
-				}  
+				}
 			  }
 			}
 		  }
@@ -109,7 +95,7 @@ pr_query = """{
 
 jq = """
 {
-	user: { 
+	user: {
 		login: .data.viewer.login,
 		name: .data.viewer.name
 	},
