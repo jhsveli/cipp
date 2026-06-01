@@ -5,7 +5,7 @@ from typing import Callable
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Header, OptionList, Static, TabbedContent, TabPane
 from textual.widgets.option_list import Option
 
@@ -45,12 +45,15 @@ class TabState:
 class PRMenuApp(App):
 	CSS = """
 	Screen { layout: vertical; }
+	#statusbar { height: 3; border: round $success; padding: 0 1; }
+	#statusbar-row { height: 1; }
 	#tabs { height: 2fr; }
-	#status { height: 3fr; padding: 0 1; color: $text-muted; overflow-y: auto; }
-	#footer-row { height: 1; }
-	#breadcrumb { width: 1fr; padding: 0 1; color: $accent; }
-	#countdown { width: auto; padding: 0 1; color: $text-muted; text-style: italic; }
-	#hotkeys { height: 1; padding: 0 1; background: $accent 20%; color: $text; }
+	#status { height: 3fr; padding: 0 1; color: $text-muted; overflow-y: auto; border: round gray; border-title-color: gray; }
+	#countdown { width: auto; padding: 0 1; color: white; text-style: italic; }
+	#countdown.running { color: $success; }
+	#breadcrumb { width: 1fr; padding: 0 1; color: white; text-align: right; }
+	#breadcrumb.running { color: $success; }
+	.hotkeys { height: 1; padding: 0 1; color: $text; }
 	OptionList { height: 1fr; }
 	"""
 
@@ -61,6 +64,8 @@ class PRMenuApp(App):
 		Binding("right", "next_tab", "Next tab", priority=True),
 	]
 
+	SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
 	def __init__(
 		self,
 		tabs: list[TabConfig],
@@ -70,6 +75,8 @@ class PRMenuApp(App):
 		super().__init__()
 		self._poll_seconds = poll_seconds
 		self._initial_tab = initial_tab
+		self._loading_tabs: set[int] = set()
+		self._spinner_frame = 0
 		self._tabs: list[TabState] = [
 			TabState(
 				config=cfg,
@@ -86,11 +93,14 @@ class PRMenuApp(App):
 			for i, ts in enumerate(self._tabs):
 				with TabPane(ts.config.name, id=f"tab-{i}"):
 					yield OptionList(id=ts.option_list_id)
-		yield Static("", id="status")
-		with Horizontal(id="footer-row"):
-			yield Static("", id="breadcrumb")
-			yield Static("", id="countdown")
-		yield Static("", id="hotkeys")
+					yield Static("", id=f"hotkeys-{i}", classes="hotkeys")
+		with Vertical(id="statusbar"):
+			with Horizontal(id="statusbar-row"):
+				yield Static("", id="countdown")
+				yield Static("", id="breadcrumb")
+		status = Static("", id="status")
+		status.border_title = "Preview"
+		yield status
 
 	def on_mount(self) -> None:
 		self.title = self._tabs[self._initial_tab].config.title
@@ -98,6 +108,7 @@ class PRMenuApp(App):
 			self._refresh_tab(i)
 			self.set_interval(self._poll_seconds, partial(self._refresh_tab, i))
 		self.set_interval(1, self._tick_countdown)
+		self.set_interval(0.1, self._tick_spinner)
 		self._render_countdown()
 		self._render_hotkeys()
 
@@ -112,18 +123,31 @@ class PRMenuApp(App):
 			ts.seconds_until_refresh = max(0, ts.seconds_until_refresh - 1)
 		self._render_countdown()
 
+	def _tick_spinner(self) -> None:
+		if not self._loading_tabs:
+			return
+		self._spinner_frame = (self._spinner_frame + 1) % len(self.SPINNER_FRAMES)
+		self._render_countdown()
+
 	def _render_countdown(self) -> None:
-		ts = self._tabs[self._active_index()]
-		self.query_one("#countdown", Static).update(
-			f"{len(ts.prs)} PR(s) · Updating in {ts.seconds_until_refresh}s…"
-		)
+		i = self._active_index()
+		ts = self._tabs[i]
+		count = f"{len(ts.prs)} PR(s) · "
+		running = i in self._loading_tabs
+		if running:
+			text = f"{count}{self.SPINNER_FRAMES[self._spinner_frame]} Updating"
+		else:
+			text = f"{count}Updating in {ts.seconds_until_refresh}s…"
+		countdown = self.query_one("#countdown", Static)
+		countdown.update(text)
+		countdown.set_class(running, "running")
 
 	def _render_hotkeys(self) -> None:
-		ts = self._tabs[self._active_index()]
 		key_label = {"enter": "↵", "escape": "esc"}
-		parts = [f"[b]{key_label.get(a.key, a.key)}[/b] {a.label}" for a in ts.config.actions]
-		parts.extend(["[b]←/→[/b] Switch tab", "[b]q[/b] Quit"])
-		self.query_one("#hotkeys", Static).update("  ".join(parts))
+		for i, ts in enumerate(self._tabs):
+			parts = [f"[b]{key_label.get(a.key, a.key)}[/b] {a.label}" for a in ts.config.actions]
+			parts.extend(["[b]←/→[/b] Switch tab", "[b]q[/b] Quit"])
+			self.query_one(f"#hotkeys-{i}", Static).update("  ".join(parts))
 
 	def _refresh_tab(self, i: int) -> None:
 		self.run_worker(
@@ -135,13 +159,22 @@ class PRMenuApp(App):
 
 	def _fetch_tab(self, i: int) -> None:
 		self.call_from_thread(self._reset_countdown, i)
-		self.call_from_thread(self._set_breadcrumb, f"[{self._tabs[i].config.name}] loading…")
+		self.call_from_thread(self._mark_loading, i, True)
 		try:
 			prs = self._tabs[i].config.fetch()
 		except Exception as e:
-			self.call_from_thread(self._set_breadcrumb, f"[{self._tabs[i].config.name}] fetch failed: {e}")
+			self.call_from_thread(self._mark_loading, i, False)
+			self.call_from_thread(self._set_breadcrumb, f"fetch failed: {e}", i)
 			return
 		self.call_from_thread(self._apply_prs, i, prs)
+
+	def _mark_loading(self, i: int, loading: bool) -> None:
+		if loading:
+			self._loading_tabs.add(i)
+		else:
+			self._loading_tabs.discard(i)
+		if i == self._active_index():
+			self._render_countdown()
 
 	def _reset_countdown(self, i: int) -> None:
 		self._tabs[i].seconds_until_refresh = self._poll_seconds
@@ -156,7 +189,7 @@ class PRMenuApp(App):
 
 		if old_ids == new_ids and ts.prs:
 			ts.prs = visible
-			self._set_breadcrumb("")
+			self._mark_loading(i, False)
 			return
 
 		option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
@@ -185,11 +218,10 @@ class PRMenuApp(App):
 			if i == self._active_index():
 				self._update_status("")
 
+		self._mark_loading(i, False)
 		added = len(new_ids - old_ids)
 		if added and old_ids:
-			self._set_breadcrumb(f"[{ts.config.name}] +{added} new PR(s)")
-		else:
-			self._set_breadcrumb("")
+			self._set_breadcrumb(f"+{added} new PR(s)", i)
 		if i == self._active_index():
 			self._render_countdown()
 
@@ -236,6 +268,7 @@ class PRMenuApp(App):
 			self._update_status("")
 		self._render_countdown()
 		self._render_hotkeys()
+		self._set_breadcrumb("")
 		option_list.focus()
 
 	def action_previous_tab(self) -> None:
@@ -252,8 +285,14 @@ class PRMenuApp(App):
 	def _update_status(self, text: str) -> None:
 		self.query_one("#status", Static).update(text)
 
-	def _set_breadcrumb(self, text: str) -> None:
-		self.query_one("#breadcrumb", Static).update(text)
+	def _set_breadcrumb(
+		self, text: str, tab_index: int | None = None, running: bool = False
+	) -> None:
+		if tab_index is not None and tab_index != self._active_index():
+			return
+		breadcrumb = self.query_one("#breadcrumb", Static)
+		breadcrumb.update(text)
+		breadcrumb.set_class(running, "running")
 
 	def on_key(self, event) -> None:
 		i = self._active_index()
@@ -277,7 +316,7 @@ class PRMenuApp(App):
 			return
 		pr = ts.prs[index]
 		ts.busy = True
-		self._set_breadcrumb(f"[{ts.config.name}] {spec.label} #{pr['number']}…")
+		self._set_breadcrumb(f"{spec.label} #{pr['number']}…", i, running=True)
 		self.run_worker(
 			lambda: self._invoke(i, spec, pr),
 			thread=True,
@@ -313,12 +352,12 @@ class PRMenuApp(App):
 					self._update_status(ts.config.status_bar(ts.prs[new_index]))
 			elif i == self._active_index():
 				self._update_status("")
-		self._set_breadcrumb(f"[{ts.config.name}] {spec.label} #{pr['number']} ✓")
+		self._set_breadcrumb(f"{spec.label} #{pr['number']} ✓", i)
 
 	def _on_action_error(self, i: int, pr: dict, error: Exception) -> None:
 		ts = self._tabs[i]
 		ts.busy = False
-		self._set_breadcrumb(f"[{ts.config.name}] #{pr['number']} failed: {error}")
+		self._set_breadcrumb(f"#{pr['number']} failed: {error}", i)
 
 
 def run_pr_menu(
