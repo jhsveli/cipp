@@ -1,12 +1,12 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from functools import partial
 from typing import Callable
 
-from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, OptionList, Static
+from textual.containers import Horizontal
+from textual.widgets import Footer, Header, OptionList, Static, TabbedContent, TabPane
 from textual.widgets.option_list import Option
 
 
@@ -22,44 +22,69 @@ class ActionSpec:
 	handler: Callable[[dict], ActionResult]
 
 
+@dataclass
+class TabConfig:
+	name: str
+	title: str
+	fetch: Callable[[], list[dict]]
+	actions: list[ActionSpec]
+	status_bar: Callable[[dict], str] = lambda pr: ""
+
+
+@dataclass
+class TabState:
+	config: TabConfig
+	option_list_id: str
+	actions_by_key: dict[str, ActionSpec]
+	prs: list[dict] = field(default_factory=list)
+	removed_ids: set[str] = field(default_factory=set)
+	busy: bool = False
+	seconds_until_refresh: int = 0
+
+
 class PRMenuApp(App):
 	CSS = """
 	Screen { layout: vertical; }
-	#status { height: 1; padding: 0 1; color: $text-muted; }
+	#tabs { height: 2fr; }
+	#status { height: 3fr; padding: 0 1; color: $text-muted; overflow-y: auto; }
 	#footer-row { height: 1; }
-	#breadcrumb { height: 1; padding: 0 1; color: $accent; width: 1fr; }
-	#countdown { height: 1; padding: 0 1; color: $text-muted; width: auto; text-style: italic; }
+	#breadcrumb { width: 1fr; padding: 0 1; color: $accent; }
+	#countdown { width: auto; padding: 0 1; color: $text-muted; text-style: italic; }
 	OptionList { height: 1fr; }
 	"""
 
+	BINDINGS = [
+		Binding("q", "quit", "Quit"),
+		Binding("escape", "quit", "Quit"),
+		Binding("left", "previous_tab", "Prev tab", priority=True),
+		Binding("right", "next_tab", "Next tab", priority=True),
+	]
+
 	def __init__(
 		self,
-		title: str,
-		fetch: Callable[[], list[dict]],
-		actions: list[ActionSpec],
-		status_bar: Callable[[dict], str],
+		tabs: list[TabConfig],
 		poll_seconds: int,
+		initial_tab: int,
 	):
 		super().__init__()
-		self._title = title
-		self._fetch = fetch
-		self._actions = {a.key: a for a in actions}
-		self._status_bar = status_bar
 		self._poll_seconds = poll_seconds
-		self._prs: list[dict] = []
-		self._removed_ids: set[str] = set()
-		self._busy = False
-		self._seconds_until_refresh = poll_seconds
-
-		self.BINDINGS = [
-			Binding("q", "quit", "Quit"),
-			Binding("escape", "quit", "Quit"),
-			*[Binding(a.key, f"run_action('{a.key}')", a.label) for a in actions],
+		self._initial_tab = initial_tab
+		self._tabs: list[TabState] = [
+			TabState(
+				config=cfg,
+				option_list_id=f"options-{i}",
+				actions_by_key={a.key: a for a in cfg.actions},
+				seconds_until_refresh=poll_seconds,
+			)
+			for i, cfg in enumerate(tabs)
 		]
 
 	def compose(self) -> ComposeResult:
 		yield Header()
-		yield OptionList(id="options")
+		with TabbedContent(id="tabs", initial=f"tab-{self._initial_tab}"):
+			for i, ts in enumerate(self._tabs):
+				with TabPane(ts.config.name, id=f"tab-{i}"):
+					yield OptionList(id=ts.option_list_id)
 		yield Static("", id="status")
 		with Horizontal(id="footer-row"):
 			yield Static("Loading…", id="breadcrumb")
@@ -67,51 +92,69 @@ class PRMenuApp(App):
 		yield Footer()
 
 	def on_mount(self) -> None:
-		self.title = self._title
-		self.refresh_now()
-		self.set_interval(self._poll_seconds, self.refresh_now)
+		self.title = self._tabs[self._initial_tab].config.title
+		for i in range(len(self._tabs)):
+			self._refresh_tab(i)
+			self.set_interval(self._poll_seconds, partial(self._refresh_tab, i))
 		self.set_interval(1, self._tick_countdown)
 		self._render_countdown()
 
+	def _active_index(self) -> int:
+		active = self.query_one(TabbedContent).active
+		if active and active.startswith("tab-"):
+			return int(active.removeprefix("tab-"))
+		return 0
+
 	def _tick_countdown(self) -> None:
-		self._seconds_until_refresh = max(0, self._seconds_until_refresh - 1)
+		for ts in self._tabs:
+			ts.seconds_until_refresh = max(0, ts.seconds_until_refresh - 1)
 		self._render_countdown()
 
 	def _render_countdown(self) -> None:
+		ts = self._tabs[self._active_index()]
 		self.query_one("#countdown", Static).update(
-			f"Updating in {self._seconds_until_refresh}s…"
+			f"Updating in {ts.seconds_until_refresh}s…"
 		)
 
-	@work(thread=True, exclusive=True, group="fetch")
-	def refresh_now(self) -> None:
-		self.call_from_thread(self._reset_countdown)
+	def _refresh_tab(self, i: int) -> None:
+		self.run_worker(
+			lambda: self._fetch_tab(i),
+			thread=True,
+			exclusive=True,
+			group=f"fetch-{i}",
+		)
+
+	def _fetch_tab(self, i: int) -> None:
+		self.call_from_thread(self._reset_countdown, i)
 		try:
-			prs = self._fetch()
+			prs = self._tabs[i].config.fetch()
 		except Exception as e:
-			self.call_from_thread(self._set_breadcrumb, f"fetch failed: {e}")
+			self.call_from_thread(self._set_breadcrumb, f"[{self._tabs[i].config.name}] fetch failed: {e}")
 			return
-		self.call_from_thread(self._apply_prs, prs)
+		self.call_from_thread(self._apply_prs, i, prs)
 
-	def _reset_countdown(self) -> None:
-		self._seconds_until_refresh = self._poll_seconds
-		self._render_countdown()
+	def _reset_countdown(self, i: int) -> None:
+		self._tabs[i].seconds_until_refresh = self._poll_seconds
+		if i == self._active_index():
+			self._render_countdown()
 
-	def _apply_prs(self, prs: list[dict]) -> None:
-		visible = [pr for pr in prs if pr["id"] not in self._removed_ids]
-		old_ids = {pr["id"] for pr in self._prs}
+	def _apply_prs(self, i: int, prs: list[dict]) -> None:
+		ts = self._tabs[i]
+		visible = [pr for pr in prs if pr["id"] not in ts.removed_ids]
+		old_ids = {pr["id"] for pr in ts.prs}
 		new_ids = {pr["id"] for pr in visible}
 
-		if old_ids == new_ids and self._prs:
-			self._prs = visible
+		if old_ids == new_ids and ts.prs:
+			ts.prs = visible
 			return
 
-		option_list = self.query_one("#options", OptionList)
+		option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
 		highlighted_id = None
-		if option_list.highlighted is not None and self._prs:
-			if 0 <= option_list.highlighted < len(self._prs):
-				highlighted_id = self._prs[option_list.highlighted]["id"]
+		if option_list.highlighted is not None and ts.prs:
+			if 0 <= option_list.highlighted < len(ts.prs):
+				highlighted_id = ts.prs[option_list.highlighted]["id"]
 
-		self._prs = visible
+		ts.prs = visible
 		option_list.clear_options()
 		option_list.add_options(
 			[Option(f"{pr['number']:>6} {pr['title']}", id=pr["id"]) for pr in visible]
@@ -120,102 +163,156 @@ class PRMenuApp(App):
 		if visible:
 			next_index = 0
 			if highlighted_id is not None:
-				for i, pr in enumerate(visible):
+				for j, pr in enumerate(visible):
 					if pr["id"] == highlighted_id:
-						next_index = i
+						next_index = j
 						break
 			option_list.highlighted = next_index
-			self._update_status(visible[next_index])
+			if i == self._active_index():
+				self._update_status(ts.config.status_bar(visible[next_index]))
 		else:
-			self._update_status(None)
+			if i == self._active_index():
+				self._update_status("")
 
 		added = len(new_ids - old_ids)
-		if added and self._prs and old_ids:
-			self._set_breadcrumb(f"→ refreshed: +{added} PR(s)")
+		name = ts.config.name
+		if added and ts.prs and old_ids:
+			self._set_breadcrumb(f"[{name}] refreshed: +{added} PR(s)")
 		elif not old_ids:
-			self._set_breadcrumb(f"loaded {len(visible)} PR(s)")
+			self._set_breadcrumb(f"[{name}] loaded {len(visible)} PR(s)")
 		else:
-			self._set_breadcrumb(f"refreshed: {len(visible)} PR(s)")
+			self._set_breadcrumb(f"[{name}] refreshed: {len(visible)} PR(s)")
+
+	def _tab_index_for_option_list(self, option_list_id: str | None) -> int | None:
+		if not option_list_id:
+			return None
+		for i, ts in enumerate(self._tabs):
+			if ts.option_list_id == option_list_id:
+				return i
+		return None
 
 	def on_option_list_option_highlighted(
 		self, event: OptionList.OptionHighlighted
 	) -> None:
-		if 0 <= event.option_index < len(self._prs):
-			self._update_status(self._prs[event.option_index])
+		i = self._tab_index_for_option_list(event.option_list.id)
+		if i is None or i != self._active_index():
+			return
+		ts = self._tabs[i]
+		if 0 <= event.option_index < len(ts.prs):
+			self._update_status(ts.config.status_bar(ts.prs[event.option_index]))
 
 	def on_option_list_option_selected(
 		self, event: OptionList.OptionSelected
 	) -> None:
-		# Enter triggers the first action whose key isn't a single letter modifier;
-		# scripts that want enter to do something map "enter" explicitly.
-		if "enter" in self._actions:
-			self._run_action_on_index(event.option_index, "enter")
+		i = self._tab_index_for_option_list(event.option_list.id)
+		if i is None:
+			return
+		if "enter" in self._tabs[i].actions_by_key:
+			self._run_action_on_tab(i, event.option_index, "enter")
 
-	def _update_status(self, pr: dict | None) -> None:
-		status = self.query_one("#status", Static)
-		status.update(self._status_bar(pr) if pr else "")
+	def on_tabbed_content_tab_activated(
+		self, event: TabbedContent.TabActivated
+	) -> None:
+		i = self._active_index()
+		ts = self._tabs[i]
+		self.title = ts.config.title
+		option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
+		if (
+			option_list.highlighted is not None
+			and 0 <= option_list.highlighted < len(ts.prs)
+		):
+			self._update_status(ts.config.status_bar(ts.prs[option_list.highlighted]))
+		else:
+			self._update_status("")
+		self._render_countdown()
+		option_list.focus()
+
+	def action_previous_tab(self) -> None:
+		self._switch_tab(-1)
+
+	def action_next_tab(self) -> None:
+		self._switch_tab(1)
+
+	def _switch_tab(self, delta: int) -> None:
+		n = len(self._tabs)
+		new_index = (self._active_index() + delta) % n
+		self.query_one(TabbedContent).active = f"tab-{new_index}"
+
+	def _update_status(self, text: str) -> None:
+		self.query_one("#status", Static).update(text)
 
 	def _set_breadcrumb(self, text: str) -> None:
 		self.query_one("#breadcrumb", Static).update(text)
 
-	def action_run_action(self, key: str) -> None:
-		option_list = self.query_one("#options", OptionList)
+	def on_key(self, event) -> None:
+		i = self._active_index()
+		spec = self._tabs[i].actions_by_key.get(event.key)
+		if spec is None or event.key == "enter":
+			return
+		option_list = self.query_one(f"#{self._tabs[i].option_list_id}", OptionList)
 		if option_list.highlighted is None:
 			return
-		self._run_action_on_index(option_list.highlighted, key)
+		event.stop()
+		self._run_action_on_tab(i, option_list.highlighted, event.key)
 
-	def _run_action_on_index(self, index: int, key: str) -> None:
-		if self._busy:
+	def _run_action_on_tab(self, i: int, index: int, key: str) -> None:
+		ts = self._tabs[i]
+		if ts.busy:
 			return
-		if not (0 <= index < len(self._prs)):
+		if not (0 <= index < len(ts.prs)):
 			return
-		spec = self._actions.get(key)
+		spec = ts.actions_by_key.get(key)
 		if spec is None:
 			return
-		pr = self._prs[index]
-		self._busy = True
-		self._set_breadcrumb(f"{spec.label} #{pr['number']}…")
-		self._invoke(spec, pr)
+		pr = ts.prs[index]
+		ts.busy = True
+		self._set_breadcrumb(f"[{ts.config.name}] {spec.label} #{pr['number']}…")
+		self.run_worker(
+			lambda: self._invoke(i, spec, pr),
+			thread=True,
+			exclusive=True,
+			group=f"action-{i}",
+		)
 
-	@work(thread=True, exclusive=True, group="action")
-	def _invoke(self, spec: ActionSpec, pr: dict) -> None:
+	def _invoke(self, i: int, spec: ActionSpec, pr: dict) -> None:
 		try:
 			result = spec.handler(pr)
 		except Exception as e:
-			self.call_from_thread(self._on_action_error, pr, e)
+			self.call_from_thread(self._on_action_error, i, pr, e)
 			return
-		self.call_from_thread(self._on_action_done, pr, spec, result)
+		self.call_from_thread(self._on_action_done, i, pr, spec, result)
 
 	def _on_action_done(
-		self, pr: dict, spec: ActionSpec, result: ActionResult
+		self, i: int, pr: dict, spec: ActionSpec, result: ActionResult
 	) -> None:
-		self._busy = False
+		ts = self._tabs[i]
+		ts.busy = False
 		if result == ActionResult.REMOVE:
-			self._removed_ids.add(pr["id"])
-			self._prs = [p for p in self._prs if p["id"] != pr["id"]]
-			option_list = self.query_one("#options", OptionList)
+			ts.removed_ids.add(pr["id"])
+			ts.prs = [p for p in ts.prs if p["id"] != pr["id"]]
+			option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
 			option_list.remove_option(pr["id"])
-			if self._prs:
+			if ts.prs:
 				new_index = min(
 					option_list.highlighted if option_list.highlighted is not None else 0,
-					len(self._prs) - 1,
+					len(ts.prs) - 1,
 				)
 				option_list.highlighted = new_index
-				self._update_status(self._prs[new_index])
-			else:
-				self._update_status(None)
-		self._set_breadcrumb(f"{spec.label} #{pr['number']} ✓")
+				if i == self._active_index():
+					self._update_status(ts.config.status_bar(ts.prs[new_index]))
+			elif i == self._active_index():
+				self._update_status("")
+		self._set_breadcrumb(f"[{ts.config.name}] {spec.label} #{pr['number']} ✓")
 
-	def _on_action_error(self, pr: dict, error: Exception) -> None:
-		self._busy = False
-		self._set_breadcrumb(f"#{pr['number']} failed: {error}")
+	def _on_action_error(self, i: int, pr: dict, error: Exception) -> None:
+		ts = self._tabs[i]
+		ts.busy = False
+		self._set_breadcrumb(f"[{ts.config.name}] #{pr['number']} failed: {error}")
 
 
 def run_pr_menu(
-	title: str,
-	fetch: Callable[[], list[dict]],
-	actions: list[ActionSpec],
-	status_bar: Callable[[dict], str] = lambda pr: "",
+	tabs: list[TabConfig],
 	poll_seconds: int = 30,
+	initial_tab: int = 0,
 ) -> None:
-	PRMenuApp(title, fetch, actions, status_bar, poll_seconds).run()
+	PRMenuApp(tabs, poll_seconds, initial_tab).run()

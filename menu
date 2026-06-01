@@ -6,4 +6,4 @@ then
     exit 1
 fi
 
-(cd $DEVENV_DIR/src && pipenv run python3 menu.py --tab reviews)
+(cd $DEVENV_DIR/src && pipenv run python3 menu.py "$@")

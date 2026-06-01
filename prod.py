@@ -1,5 +1,5 @@
 from cmd import exec, exec_json
-from pr_menu import ActionResult, ActionSpec, run_pr_menu
+from pr_menu import ActionResult, ActionSpec, TabConfig
 
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
 AUTHOR = "aws-plattform-image-updater"
@@ -42,15 +42,6 @@ def approve_and_merge(pr):
 	exec(['gh', 'pr', 'review', '--approve', str(pr['number']), '-R', REPO])
 	exec(['gh', 'pr', 'merge', '-s', '-R', REPO, str(pr['number'])])
 	return ActionResult.REMOVE
-
-
-def prod_menu():
-	run_pr_menu(
-		title="Pick an image update in prod for approval",
-		fetch=fetch_prs,
-		actions=[ActionSpec(key="enter", label="Approve + merge", handler=approve_and_merge)],
-		status_bar=lambda pr: pr['body'],
-	)
 
 
 pr_query = """{
@@ -113,5 +104,10 @@ jq = """
 	}]
 }"""
 
-if __name__ == '__main__':
-	prod_menu()
+TAB = TabConfig(
+	name="Production",
+	title="Pick an image update in prod for approval",
+	fetch=fetch_prs,
+	actions=[ActionSpec(key="enter", label="Approve + merge", handler=approve_and_merge)],
+	status_bar=lambda pr: pr['body'],
+)

@@ -1,5 +1,5 @@
 from cmd import exec, exec_json
-from pr_menu import ActionResult, ActionSpec, run_pr_menu
+from pr_menu import ActionResult, ActionSpec, TabConfig
 
 
 CHECK_EMOJI = {
@@ -41,19 +41,6 @@ def approve_and_merge(pr):
 def open_in_browser(pr):
 	exec(['gh', 'pr', 'view', '--web', '-R', pr['repository']['nameWithOwner'], str(pr['number'])])
 	return ActionResult.KEEP
-
-
-def pr_menu():
-	run_pr_menu(
-		title="Open PRs awaiting review",
-		fetch=fetch_prs,
-		actions=[
-			ActionSpec(key="a", label="Approve", handler=approve),
-			ActionSpec(key="m", label="Approve + merge", handler=approve_and_merge),
-			ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
-		],
-		status_bar=status_bar,
-	)
 
 
 pr_query = """{
@@ -110,5 +97,14 @@ jq = """
    checkStatus: .commits.nodes[0].commit.statusCheckRollup.state
 }]"""
 
-if __name__ == '__main__':
-	pr_menu()
+TAB = TabConfig(
+	name="Reviews",
+	title="Open PRs awaiting review",
+	fetch=fetch_prs,
+	actions=[
+		ActionSpec(key="a", label="Approve", handler=approve),
+		ActionSpec(key="m", label="Approve + merge", handler=approve_and_merge),
+		ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
+	],
+	status_bar=status_bar,
+)
