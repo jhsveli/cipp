@@ -1,12 +1,16 @@
 from .abbreviate import short_repo
 from .cmd import exec, exec_json
+from .extract_author import resolve_author
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age
 
 
 CHECK_EMOJI = {
 	'SUCCESS': '🟢',
+	'PENDING': '🟡',
+	'EXPECTED': '🟡',
 	'SKIPPED': '🟡',
 	'FAILURE': '🔴',
+	'ERROR': '🔴',
 }
 
 
@@ -40,6 +44,12 @@ def open_in_browser(pr):
 
 def fetch_diff(pr):
 	return exec(['gh', 'pr', 'diff', str(pr['number']), '-R', pr['repository']['nameWithOwner']])
+
+
+def author_label(pr):
+	name, is_bot = resolve_author(pr['author'], is_bot=pr['isBot'])
+	emoji = '🤖' if is_bot else '🧠'
+	return f"{emoji} {name}"
 
 
 pr_query = """{
@@ -130,6 +140,6 @@ TAB = TabConfig(
 		),
 	],
 	pr_label=lambda pr: pr['title'],
-	idle_label=lambda pr: f"{'🤖' if pr['isBot'] else '🧬'} {pr['author']}",
+	idle_label=author_label,
 	diff_fetch=fetch_diff,
 )

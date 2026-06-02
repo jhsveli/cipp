@@ -45,6 +45,12 @@ def approve_and_merge(pr):
 	return ActionResult.REMOVE
 
 
+def author_label(pr):
+	name, is_bot = extract_author(pr)
+	emoji = '🤖' if is_bot else '🧠'
+	return f"{emoji} {name}"
+
+
 pr_query = """{
 	viewer {
 		login
@@ -113,7 +119,7 @@ TAB = TabConfig(
 	actions=[ActionSpec(key="enter", label="Approve + merge", handler=approve_and_merge)],
 	status_bar=lambda pr: pr['body'],
 	pr_label=lambda pr: pr['title'],
-	idle_label=lambda pr: f"🧬 {extract_author(pr)}",
+	idle_label=author_label,
 	columns=[
 		ColumnSpec(
 			key="age",

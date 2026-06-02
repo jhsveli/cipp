@@ -4,6 +4,10 @@ _AUTHOR_LINE = re.compile(r"^Author:\s*([^<\n]+?)\s*(?:<.*)?$", re.MULTILINE)
 _PAREN = re.compile(r"\(([^)]+)\)")
 _PR_REF = re.compile(r"^#\d+$")
 
+KNOWN_BOTS = {
+	"aws-plattform-image-updater": "image-updater",
+}
+
 
 def from_body(body: str) -> str | None:
 	m = _AUTHOR_LINE.search(body or "")
@@ -16,5 +20,14 @@ def from_title(title: str) -> str | None:
 	return matches[-1] if matches else None
 
 
-def extract_author(pr: dict) -> str:
-	return from_title(pr.get("title", "")) or from_body(pr.get("body", "")) or pr["author"]
+def resolve_author(raw: str, is_bot: bool = False) -> tuple[str, bool]:
+	if "[bot]" in raw:
+		return raw.replace("[bot]", "").strip(), True
+	if raw in KNOWN_BOTS:
+		return KNOWN_BOTS[raw], True
+	return raw, is_bot
+
+
+def extract_author(pr: dict) -> tuple[str, bool]:
+	raw = from_title(pr.get("title", "")) or from_body(pr.get("body", "")) or pr["author"]
+	return resolve_author(raw)
