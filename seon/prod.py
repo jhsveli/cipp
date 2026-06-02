@@ -1,5 +1,5 @@
 from .cmd import exec, exec_json
-from .pr_menu import ActionResult, ActionSpec, TabConfig
+from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age
 
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
 AUTHOR = "aws-plattform-image-updater"
@@ -112,4 +112,12 @@ TAB = TabConfig(
 	actions=[ActionSpec(key="enter", label="Approve + merge", handler=approve_and_merge)],
 	status_bar=lambda pr: pr['body'],
 	pr_label=lambda pr: pr['title'],
+	columns=[
+		ColumnSpec(
+			key="age",
+			label="Age",
+			width=6,
+			render=lambda pr: format_age(pr["createdAt"]),
+		),
+	],
 )

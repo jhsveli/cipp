@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable
 
@@ -19,6 +20,20 @@ class ActionSpec:
 	key: str
 	label: str
 	handler: Callable[[dict], ActionResult]
+
+
+def format_age(created_at: str) -> str:
+	created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+	delta = datetime.now(timezone.utc) - created
+	total_minutes = int(delta.total_seconds() // 60)
+	if total_minutes < 60:
+		return f"{total_minutes}m"
+	hours, minutes = divmod(total_minutes, 60)
+	if hours < 10:
+		return f"{hours}h {minutes}m"
+	if hours < 24:
+		return f"{hours}h"
+	return f"{hours // 24}d"
 
 
 @dataclass

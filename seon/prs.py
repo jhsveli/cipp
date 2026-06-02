@@ -1,6 +1,6 @@
 from .abbreviate import short_repo
 from .cmd import exec, exec_json
-from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig
+from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age
 
 
 CHECK_EMOJI = {
@@ -120,6 +120,12 @@ TAB = TabConfig(
 			label="Ref",
 			width=None,
 			render=lambda pr: f"{short_repo(pr['repository']['name'])}#{pr['number']}",
+		),
+		ColumnSpec(
+			key="age",
+			label="Age",
+			width=6,
+			render=lambda pr: format_age(pr["createdAt"]),
 		),
 	],
 	pr_label=lambda pr: pr['title'],
