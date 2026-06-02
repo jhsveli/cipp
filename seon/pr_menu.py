@@ -6,8 +6,8 @@ from typing import Any, Callable
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable, Header, Static, TabbedContent, TabPane
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import DataTable, Header, Markdown, Static, TabbedContent, TabPane
 
 
 class ActionResult(Enum):
@@ -129,7 +129,7 @@ class PRMenuApp(App):
 			with Horizontal(id="statusbar-row"):
 				yield Static("", id="countdown")
 				yield Static("", id="breadcrumb")
-		status = Static("", id="status")
+		status = VerticalScroll(Markdown("", id="status-md"), id="status")
 		status.border_title = "Preview"
 		yield status
 
@@ -384,7 +384,7 @@ class PRMenuApp(App):
 		self.query_one(TabbedContent).active = f"tab-{new_index}"
 
 	def _update_status(self, text: str) -> None:
-		self.query_one("#status", Static).update(text)
+		self.query_one("#status-md", Markdown).update(text)
 
 	def _set_breadcrumb(
 		self, text: str, tab_index: int | None = None, running: bool = False
