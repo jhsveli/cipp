@@ -21,11 +21,6 @@ def fetch_prs():
 	return response
 
 
-def status_bar(pr):
-	emoji = '🤖' if pr['isBot'] else '🧬'
-	return f"In: {pr['repository']['name']} | By: {emoji} {pr['author']} | On: {pr['createdAt']}"
-
-
 def approve(pr):
 	exec(['gh', 'pr', 'review', '--approve', str(pr['number']), '-R', pr['repository']['nameWithOwner']])
 	return ActionResult.REMOVE
@@ -107,7 +102,7 @@ TAB = TabConfig(
 		ActionSpec(key="m", label="Approve + merge", handler=approve_and_merge),
 		ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
 	],
-	status_bar=status_bar,
+	status_bar=lambda pr: pr['body'],
 	columns=[
 		ColumnSpec(
 			key="checks",
