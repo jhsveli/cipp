@@ -139,7 +139,7 @@ class PRMenuApp(App):
 			table = self.query_one(f"#{ts.table_id}", DataTable)
 			for col in ts.config.columns:
 				table.add_column(col.label, key=col.key, width=col.width)
-			table.add_column("PR", key="pr")
+			table.add_column("PR", key="pr", width=10)
 			table.add_column("Status", key="status", width=20)
 		for i in range(len(self._tabs)):
 			self._refresh_tab(i)
@@ -147,6 +147,32 @@ class PRMenuApp(App):
 		self.set_interval(0.1, self._tick_spinner)
 		self._render_countdown()
 		self._render_hotkeys()
+
+	def on_resize(self, event) -> None:
+		self._flex_pr_columns()
+
+	def _flex_pr_columns(self) -> None:
+		for ts in self._tabs:
+			try:
+				table = self.query_one(f"#{ts.table_id}", DataTable)
+			except Exception:
+				continue
+			if table.size.width <= 0:
+				continue
+			pr_col = next(
+				(c for k, c in table.columns.items() if k.value == "pr"), None
+			)
+			if pr_col is None:
+				continue
+			others = sum(
+				c.get_render_width(table) for k, c in table.columns.items() if k.value != "pr"
+			)
+			padding = 2 * table.cell_padding
+			available = max(10, table.size.width - others - padding)
+			pr_col.width = available
+			pr_col.auto_width = False
+			table._require_update_dimensions = True
+			table.refresh()
 
 	def _active_index(self) -> int:
 		active = self.query_one(TabbedContent).active
@@ -279,6 +305,7 @@ class PRMenuApp(App):
 			cells.append(self._left_cell(ts, pr))
 			cells.append(self._right_cell(ts, pr["id"]))
 			table.add_row(*cells, key=pr["id"])
+		self.call_after_refresh(self._flex_pr_columns)
 
 		if visible:
 			next_index = 0
@@ -343,6 +370,7 @@ class PRMenuApp(App):
 		self._render_hotkeys()
 		self._set_breadcrumb("")
 		table.focus()
+		self.call_after_refresh(self._flex_pr_columns)
 
 	def action_previous_tab(self) -> None:
 		self._switch_tab(-1)
