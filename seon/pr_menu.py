@@ -93,6 +93,10 @@ class PRMenuApp(App):
 		Binding("left", "previous_tab", "Prev tab", priority=True),
 		Binding("right", "next_tab", "Next tab", priority=True),
 		Binding("d", "toggle_diff", "Toggle diff", priority=True),
+		Binding("shift+up", "preview_scroll_up", "Preview ↑", priority=True),
+		Binding("shift+down", "preview_scroll_down", "Preview ↓", priority=True),
+		Binding("ctrl+up", "preview_page_up", "Preview ⇞", priority=True),
+		Binding("ctrl+down", "preview_page_down", "Preview ⇟", priority=True),
 	]
 
 	SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -492,6 +496,18 @@ class PRMenuApp(App):
 		if not (0 <= table.cursor_row < len(ts.prs)):
 			return False
 		return ts.prs[table.cursor_row]["id"] == pr_id
+
+	def action_preview_scroll_up(self) -> None:
+		self.query_one("#status").scroll_up()
+
+	def action_preview_scroll_down(self) -> None:
+		self.query_one("#status").scroll_down()
+
+	def action_preview_page_up(self) -> None:
+		self.query_one("#status").scroll_page_up()
+
+	def action_preview_page_down(self) -> None:
+		self.query_one("#status").scroll_page_down()
 
 	def action_toggle_diff(self) -> None:
 		i = self._active_index()
