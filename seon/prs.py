@@ -1,3 +1,4 @@
+from .abbreviate import short_repo
 from .cmd import exec, exec_json
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig
 
@@ -114,5 +115,12 @@ TAB = TabConfig(
 			width=2,
 			render=lambda pr: CHECK_EMOJI.get(pr["checkStatus"], "❔"),
 		),
+		ColumnSpec(
+			key="ref",
+			label="Ref",
+			width=None,
+			render=lambda pr: f"{short_repo(pr['repository']['name'])}#{pr['number']}",
+		),
 	],
+	pr_label=lambda pr: pr['title'],
 )

@@ -111,4 +111,5 @@ TAB = TabConfig(
 	fetch=fetch_prs,
 	actions=[ActionSpec(key="enter", label="Approve + merge", handler=approve_and_merge)],
 	status_bar=lambda pr: pr['body'],
+	pr_label=lambda pr: pr['title'],
 )

@@ -37,6 +37,7 @@ class TabConfig:
 	actions: list[ActionSpec]
 	status_bar: Callable[[dict], str] = lambda pr: ""
 	columns: list[ColumnSpec] = field(default_factory=list)
+	pr_label: Callable[[dict], str] = lambda pr: f"{pr['number']:>6} {pr['title']}"
 
 
 @dataclass
@@ -173,8 +174,8 @@ class PRMenuApp(App):
 		countdown.update(text)
 		countdown.set_class(running, "running")
 
-	def _left_cell(self, pr: dict) -> str:
-		return f"{pr['number']:>6} {pr['title']}"
+	def _left_cell(self, ts: TabState, pr: dict) -> str:
+		return ts.config.pr_label(pr)
 
 	def _right_cell(self, ts: TabState, pr_id: str, dim: bool = False) -> Text:
 		if pr_id in ts.acting_pr_ids:
@@ -258,7 +259,7 @@ class PRMenuApp(App):
 		table.clear()
 		for pr in visible:
 			cells = [col.render(pr) for col in ts.config.columns]
-			cells.append(self._left_cell(pr))
+			cells.append(self._left_cell(ts, pr))
 			cells.append(self._right_cell(ts, pr["id"]))
 			table.add_row(*cells, key=pr["id"])
 
