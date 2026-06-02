@@ -1,4 +1,5 @@
 from .cmd import exec, exec_json
+from .extract_author import extract_author
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age
 
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
@@ -112,6 +113,7 @@ TAB = TabConfig(
 	actions=[ActionSpec(key="enter", label="Approve + merge", handler=approve_and_merge)],
 	status_bar=lambda pr: pr['body'],
 	pr_label=lambda pr: pr['title'],
+	idle_label=lambda pr: f"🧬 {extract_author(pr)}",
 	columns=[
 		ColumnSpec(
 			key="age",
