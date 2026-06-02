@@ -38,6 +38,10 @@ def open_in_browser(pr):
 	return ActionResult.KEEP
 
 
+def fetch_diff(pr):
+	return exec(['gh', 'pr', 'diff', str(pr['number']), '-R', pr['repository']['nameWithOwner']])
+
+
 pr_query = """{
   search(query: "type:pr state:open review-requested:@me -label:image-updater sort:created-desc", type: ISSUE, first: 100) {
     issueCount
@@ -67,6 +71,7 @@ pr_query = """{
           commits(last: 1) {
             nodes {
               commit {
+                oid
                 statusCheckRollup {
 				  state
 				}
@@ -90,6 +95,7 @@ jq = """
    createdAt: .createdAt,
    title: .title,
    body: .body,
+   headSha: .commits.nodes[0].commit.oid,
    checkStatus: .commits.nodes[0].commit.statusCheckRollup.state
 }]"""
 
@@ -125,4 +131,5 @@ TAB = TabConfig(
 	],
 	pr_label=lambda pr: pr['title'],
 	idle_label=lambda pr: f"{'🤖' if pr['isBot'] else '🧬'} {pr['author']}",
+	diff_fetch=fetch_diff,
 )

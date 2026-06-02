@@ -54,6 +54,7 @@ class TabConfig:
 	columns: list[ColumnSpec] = field(default_factory=list)
 	pr_label: Callable[[dict], str] = lambda pr: f"{pr['number']:>6} {pr['title']}"
 	idle_label: Callable[[dict], str] = lambda pr: ""
+	diff_fetch: Callable[[dict], str] | None = None
 
 
 @dataclass
@@ -75,6 +76,9 @@ class PRMenuApp(App):
 	#statusbar-row { height: 1; }
 	#tabs { height: 2fr; }
 	#status { height: 3fr; padding: 0 1; color: $text-muted; overflow-y: auto; border: round gray; border-title-color: gray; }
+	#status-diff { display: none; }
+	#status.diff-mode #status-md { display: none; }
+	#status.diff-mode #status-diff { display: block; }
 	#countdown { width: auto; padding: 0 1; color: white; text-style: italic; }
 	#countdown.running { color: $success; }
 	#breadcrumb { width: 1fr; padding: 0 1; color: white; text-align: right; }
@@ -88,6 +92,7 @@ class PRMenuApp(App):
 		Binding("escape", "quit", "Quit"),
 		Binding("left", "previous_tab", "Prev tab", priority=True),
 		Binding("right", "next_tab", "Next tab", priority=True),
+		Binding("d", "toggle_diff", "Toggle diff", priority=True),
 	]
 
 	SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -103,6 +108,8 @@ class PRMenuApp(App):
 		self._initial_tab = initial_tab
 		self._loading_tabs: set[int] = set()
 		self._spinner_frame = 0
+		self._diff_mode_pr_ids: set[str] = set()
+		self._diff_cache: dict[str, tuple[str, str]] = {}
 		self._tabs: list[TabState] = [
 			TabState(
 				config=cfg,
@@ -129,8 +136,12 @@ class PRMenuApp(App):
 			with Horizontal(id="statusbar-row"):
 				yield Static("", id="countdown")
 				yield Static("", id="breadcrumb")
-		status = VerticalScroll(Markdown("", id="status-md"), id="status")
-		status.border_title = "Preview"
+		status = VerticalScroll(
+			Markdown("", id="status-md"),
+			Static("", id="status-diff", markup=False),
+			id="status",
+		)
+		status.border_title = "Preview | Body"
 		yield status
 
 	def on_mount(self) -> None:
@@ -242,6 +253,8 @@ class PRMenuApp(App):
 		key_label = {"enter": "↵", "escape": "esc"}
 		for i, ts in enumerate(self._tabs):
 			parts = [f"[b]{key_label.get(a.key, a.key)}[/b] {a.label}" for a in ts.config.actions]
+			if ts.config.diff_fetch is not None:
+				parts.append("[b]d[/b] Toggle diff")
 			parts.extend(["[b]←/→[/b] Switch tab", "[b]q[/b] Quit"])
 			self.query_one(f"#hotkeys-{i}", Static).update("  ".join(parts))
 
@@ -316,7 +329,7 @@ class PRMenuApp(App):
 						break
 			table.move_cursor(row=next_index)
 			if i == self._active_index():
-				self._update_status(ts.config.status_bar(visible[next_index]))
+				self._render_preview(ts, visible[next_index])
 		else:
 			if i == self._active_index():
 				self._update_status("")
@@ -344,7 +357,7 @@ class PRMenuApp(App):
 			return
 		ts = self._tabs[i]
 		if 0 <= event.cursor_row < len(ts.prs):
-			self._update_status(ts.config.status_bar(ts.prs[event.cursor_row]))
+			self._render_preview(ts, ts.prs[event.cursor_row])
 
 	def on_data_table_row_selected(
 		self, event: DataTable.RowSelected
@@ -363,7 +376,7 @@ class PRMenuApp(App):
 		self.title = ts.config.title
 		table = self.query_one(f"#{ts.table_id}", DataTable)
 		if table.row_count > 0 and 0 <= table.cursor_row < len(ts.prs):
-			self._update_status(ts.config.status_bar(ts.prs[table.cursor_row]))
+			self._render_preview(ts, ts.prs[table.cursor_row])
 		else:
 			self._update_status("")
 		self._render_countdown()
@@ -385,6 +398,112 @@ class PRMenuApp(App):
 
 	def _update_status(self, text: str) -> None:
 		self.query_one("#status-md", Markdown).update(text)
+
+	def _show_diff_mode(self, on: bool) -> None:
+		status = self.query_one("#status")
+		status.set_class(on, "diff-mode")
+		status.border_title = "Preview | Diff" if on else "Preview | Body"
+
+	def _render_diff_text(self, diff: str) -> Text:
+		text = Text()
+		for line in diff.splitlines(keepends=False):
+			if line.startswith("+++") or line.startswith("---"):
+				style = "bold"
+			elif line.startswith("+"):
+				style = "green"
+			elif line.startswith("-"):
+				style = "red"
+			elif line.startswith("@@"):
+				style = "cyan"
+			elif line.startswith("diff --git") or line.startswith("index "):
+				style = "bold"
+			else:
+				style = ""
+			text.append(line + "\n", style=style)
+		return text
+
+	def _render_preview(self, ts: TabState, pr: dict) -> None:
+		pr_id = pr["id"]
+		if pr_id not in self._diff_mode_pr_ids:
+			self._show_diff_mode(False)
+			self._update_status(ts.config.status_bar(pr))
+			return
+		cached = self._diff_cache.get(pr_id)
+		if cached and cached[0] == pr.get("headSha"):
+			self._show_diff_mode(True)
+			self.query_one("#status-diff", Static).update(self._render_diff_text(cached[1]))
+			return
+		self._show_diff_mode(False)
+		self._update_status("Loading diff...")
+		self._fetch_diff(ts, pr)
+
+	def _fetch_diff(self, ts: TabState, pr: dict) -> None:
+		fetcher = ts.config.diff_fetch
+		if fetcher is None:
+			return
+		pr_id = pr["id"]
+		head_sha = pr.get("headSha", "")
+		self.run_worker(
+			lambda: self._fetch_diff_worker(pr_id, head_sha, pr, fetcher),
+			thread=True,
+			exclusive=True,
+			group=f"diff-{pr_id}",
+		)
+
+	def _fetch_diff_worker(
+		self,
+		pr_id: str,
+		head_sha: str,
+		pr: dict,
+		fetcher: Callable[[dict], str],
+	) -> None:
+		try:
+			diff = fetcher(pr)
+		except Exception as e:
+			self.call_from_thread(self._on_diff_error, pr_id, e)
+			return
+		self.call_from_thread(self._on_diff_loaded, pr_id, head_sha, diff)
+
+	def _on_diff_loaded(self, pr_id: str, head_sha: str, diff: str) -> None:
+		self._diff_cache[pr_id] = (head_sha, diff)
+		if pr_id in self._diff_mode_pr_ids and self._is_highlighted(pr_id):
+			self._show_diff_mode(True)
+			self.query_one("#status-diff", Static).update(self._render_diff_text(diff))
+
+	def _on_diff_error(self, pr_id: str, error: Exception) -> None:
+		if pr_id in self._diff_mode_pr_ids and self._is_highlighted(pr_id):
+			self._show_diff_mode(False)
+			self._update_status(f"Failed to fetch diff: {error}")
+
+	def _is_highlighted(self, pr_id: str) -> bool:
+		i = self._active_index()
+		ts = self._tabs[i]
+		try:
+			table = self.query_one(f"#{ts.table_id}", DataTable)
+		except Exception:
+			return False
+		if not (0 <= table.cursor_row < len(ts.prs)):
+			return False
+		return ts.prs[table.cursor_row]["id"] == pr_id
+
+	def action_toggle_diff(self) -> None:
+		i = self._active_index()
+		ts = self._tabs[i]
+		if ts.config.diff_fetch is None:
+			return
+		try:
+			table = self.query_one(f"#{ts.table_id}", DataTable)
+		except Exception:
+			return
+		if not (0 <= table.cursor_row < len(ts.prs)):
+			return
+		pr = ts.prs[table.cursor_row]
+		pr_id = pr["id"]
+		if pr_id in self._diff_mode_pr_ids:
+			self._diff_mode_pr_ids.discard(pr_id)
+		else:
+			self._diff_mode_pr_ids.add(pr_id)
+		self._render_preview(ts, pr)
 
 	def _set_breadcrumb(
 		self, text: str, tab_index: int | None = None, running: bool = False
@@ -459,6 +578,8 @@ class PRMenuApp(App):
 			return
 		ts.finishing_pr_ids.discard(pr_id)
 		ts.removed_ids.add(pr_id)
+		self._diff_mode_pr_ids.discard(pr_id)
+		self._diff_cache.pop(pr_id, None)
 		ts.prs = [p for p in ts.prs if p["id"] != pr_id]
 		table = self.query_one(f"#{ts.table_id}", DataTable)
 		try:
@@ -469,7 +590,7 @@ class PRMenuApp(App):
 			new_index = min(table.cursor_row, len(ts.prs) - 1)
 			table.move_cursor(row=new_index)
 			if i == self._active_index():
-				self._update_status(ts.config.status_bar(ts.prs[new_index]))
+				self._render_preview(ts, ts.prs[new_index])
 		elif i == self._active_index():
 			self._update_status("")
 
