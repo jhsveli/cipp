@@ -301,6 +301,13 @@ class PRMenuApp(App):
 
 		if old_ids == new_ids and ts.prs:
 			ts.prs = visible
+			table = self.query_one(f"#{ts.table_id}", DataTable)
+			for pr in visible:
+				for col in ts.config.columns:
+					try:
+						table.update_cell(pr["id"], col.key, col.render(pr))
+					except Exception:
+						pass
 			self._mark_loading(i, False)
 			return
 
