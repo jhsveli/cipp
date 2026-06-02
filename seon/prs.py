@@ -1,5 +1,5 @@
 from .cmd import exec, exec_json
-from .pr_menu import ActionResult, ActionSpec, TabConfig
+from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig
 
 
 CHECK_EMOJI = {
@@ -22,8 +22,7 @@ def fetch_prs():
 
 def status_bar(pr):
 	emoji = '🤖' if pr['isBot'] else '🧬'
-	checkji = CHECK_EMOJI.get(pr['checkStatus'], '❔')
-	return f"In: {pr['repository']['name']} | By: {emoji} {pr['author']} | On: {pr['createdAt']} | Checks: {checkji}"
+	return f"In: {pr['repository']['name']} | By: {emoji} {pr['author']} | On: {pr['createdAt']}"
 
 
 def approve(pr):
@@ -108,4 +107,12 @@ TAB = TabConfig(
 		ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
 	],
 	status_bar=status_bar,
+	columns=[
+		ColumnSpec(
+			key="checks",
+			label="✓",
+			width=2,
+			render=lambda pr: CHECK_EMOJI.get(pr["checkStatus"], "❔"),
+		),
+	],
 )

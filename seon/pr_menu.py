@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable
+from typing import Any, Callable
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -22,12 +22,21 @@ class ActionSpec:
 
 
 @dataclass
+class ColumnSpec:
+	key: str
+	label: str
+	width: int | None
+	render: Callable[[dict], Any]
+
+
+@dataclass
 class TabConfig:
 	name: str
 	title: str
 	fetch: Callable[[], list[dict]]
 	actions: list[ActionSpec]
 	status_bar: Callable[[dict], str] = lambda pr: ""
+	columns: list[ColumnSpec] = field(default_factory=list)
 
 
 @dataclass
@@ -111,6 +120,8 @@ class PRMenuApp(App):
 		self.title = self._tabs[self._initial_tab].config.title
 		for ts in self._tabs:
 			table = self.query_one(f"#{ts.table_id}", DataTable)
+			for col in ts.config.columns:
+				table.add_column(col.label, key=col.key, width=col.width)
 			table.add_column("PR", key="pr")
 			table.add_column("Status", key="status", width=20)
 		for i in range(len(self._tabs)):
@@ -246,11 +257,10 @@ class PRMenuApp(App):
 		ts.prs = visible
 		table.clear()
 		for pr in visible:
-			table.add_row(
-				self._left_cell(pr),
-				self._right_cell(ts, pr["id"]),
-				key=pr["id"],
-			)
+			cells = [col.render(pr) for col in ts.config.columns]
+			cells.append(self._left_cell(pr))
+			cells.append(self._right_cell(ts, pr["id"]))
+			table.add_row(*cells, key=pr["id"])
 
 		if visible:
 			next_index = 0
