@@ -38,6 +38,7 @@ class TabConfig:
 	status_bar: Callable[[dict], str] = lambda pr: ""
 	columns: list[ColumnSpec] = field(default_factory=list)
 	pr_label: Callable[[dict], str] = lambda pr: f"{pr['number']:>6} {pr['title']}"
+	idle_label: Callable[[dict], str] = lambda pr: ""
 
 
 @dataclass
@@ -184,7 +185,8 @@ class PRMenuApp(App):
 		elif pr_id in ts.finishing_pr_ids:
 			content = "✓ Done"
 		else:
-			content = ""
+			pr = next((p for p in ts.prs if p["id"] == pr_id), None)
+			content = ts.config.idle_label(pr) if pr else ""
 		return Text(content, style="dim" if dim else "", justify="right")
 
 	def _refresh_row(self, i: int, pr_id: str, dim: bool = False) -> None:

@@ -123,4 +123,5 @@ TAB = TabConfig(
 		),
 	],
 	pr_label=lambda pr: pr['title'],
+	idle_label=lambda pr: f"{'🤖' if pr['isBot'] else '🧬'} {pr['author']}",
 )
