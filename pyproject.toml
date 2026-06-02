@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "seon"
+name = "cipp"
 version = "0.1.0"
 description = "Textual TUI for reviewing and merging GitHub PRs across two tabs (production rollouts and review queue)"
 readme = "README.md"
@@ -11,4 +11,4 @@ requires-python = ">=3.10"
 dependencies = ["textual>=0.50"]
 
 [project.scripts]
-seon = "seon.menu:main"
+cipp = "cipp.menu:main"

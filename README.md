@@ -1,6 +1,6 @@
-# seon
+# cipp
 
-> *Old English `sēon` — to look, to see*
+> *Old English `cipp` — log, trunk*
 
 A Textual TUI for skimming, approving, and merging GitHub PRs from the terminal.
 
@@ -16,27 +16,27 @@ Two tabs:
 Requires `gh` CLI installed and authenticated, and Python 3.10+.
 
 ```bash
-pipx install git+https://github.com/jhsveli/seon.git
+pipx install git+https://github.com/jhsveli/cipp.git
 ```
 
 Then:
 
 ```bash
-seon                  # opens on Production
-seon --tab reviews    # opens on Reviews
+cipp                  # opens on Production
+cipp --tab reviews    # opens on Reviews
 ```
 
 ## Update
 
 ```bash
-pipx upgrade seon
+pipx upgrade cipp
 ```
 
 ## Develop
 
 ```bash
-git clone git@github.com:jhsveli/seon.git
-cd seon
+git clone git@github.com:jhsveli/cipp.git
+cd cipp
 pip install -e .
-seon
+cipp
 ```
