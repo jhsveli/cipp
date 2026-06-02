@@ -2,13 +2,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
-from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Header, OptionList, Static, TabbedContent, TabPane
-from textual.widgets.option_list import Option
+from textual.widgets import DataTable, Header, Static, TabbedContent, TabPane
 
 
 class ActionResult(Enum):
@@ -35,7 +33,7 @@ class TabConfig:
 @dataclass
 class TabState:
 	config: TabConfig
-	option_list_id: str
+	table_id: str
 	actions_by_key: dict[str, ActionSpec]
 	prs: list[dict] = field(default_factory=list)
 	removed_ids: set[str] = field(default_factory=set)
@@ -56,7 +54,7 @@ class PRMenuApp(App):
 	#breadcrumb { width: 1fr; padding: 0 1; color: white; text-align: right; }
 	#breadcrumb.running { color: $success; }
 	.hotkeys { height: 1; padding: 0 1; color: $text; }
-	OptionList { height: 1fr; }
+	DataTable { height: 1fr; }
 	"""
 
 	BINDINGS = [
@@ -82,7 +80,7 @@ class PRMenuApp(App):
 		self._tabs: list[TabState] = [
 			TabState(
 				config=cfg,
-				option_list_id=f"options-{i}",
+				table_id=f"table-{i}",
 				actions_by_key={a.key: a for a in cfg.actions},
 				seconds_until_refresh=poll_seconds,
 			)
@@ -94,7 +92,12 @@ class PRMenuApp(App):
 		with TabbedContent(id="tabs", initial=f"tab-{self._initial_tab}"):
 			for i, ts in enumerate(self._tabs):
 				with TabPane(ts.config.name, id=f"tab-{i}"):
-					yield OptionList(id=ts.option_list_id)
+					yield DataTable(
+						id=ts.table_id,
+						show_header=False,
+						cursor_type="row",
+						zebra_stripes=False,
+					)
 					yield Static("", id=f"hotkeys-{i}", classes="hotkeys")
 		with Vertical(id="statusbar"):
 			with Horizontal(id="statusbar-row"):
@@ -106,6 +109,10 @@ class PRMenuApp(App):
 
 	def on_mount(self) -> None:
 		self.title = self._tabs[self._initial_tab].config.title
+		for ts in self._tabs:
+			table = self.query_one(f"#{ts.table_id}", DataTable)
+			table.add_column("PR", key="pr")
+			table.add_column("Status", key="status", width=20)
 		for i in range(len(self._tabs)):
 			self._refresh_tab(i)
 		self.set_interval(1, self._tick_countdown)
@@ -155,31 +162,24 @@ class PRMenuApp(App):
 		countdown.update(text)
 		countdown.set_class(running, "running")
 
-	def _row_prompt(self, ts: TabState, pr: dict, dim: bool = False):
-		left = f"{pr['number']:>6} {pr['title']}"
-		pr_id = pr["id"]
+	def _left_cell(self, pr: dict) -> str:
+		return f"{pr['number']:>6} {pr['title']}"
+
+	def _right_cell(self, ts: TabState, pr_id: str, dim: bool = False) -> Text:
 		if pr_id in ts.acting_pr_ids:
 			label = ts.acting_pr_ids[pr_id]
-			right = f"{self.SPINNER_FRAMES[self._spinner_frame]} {label}"
+			content = f"{self.SPINNER_FRAMES[self._spinner_frame]} {label}"
 		elif pr_id in ts.finishing_pr_ids:
-			right = "✓ Done"
+			content = "✓ Done"
 		else:
-			right = ""
-		grid = Table.grid(expand=True)
-		grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
-		grid.add_column(justify="right", no_wrap=True)
-		style = "dim" if dim else ""
-		grid.add_row(Text(left, style=style), Text(right, style=style))
-		return grid
+			content = ""
+		return Text(content, style="dim" if dim else "", justify="right")
 
 	def _refresh_row(self, i: int, pr_id: str, dim: bool = False) -> None:
 		ts = self._tabs[i]
-		pr = next((p for p in ts.prs if p["id"] == pr_id), None)
-		if pr is None:
-			return
-		option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
+		table = self.query_one(f"#{ts.table_id}", DataTable)
 		try:
-			option_list.replace_option_prompt(pr_id, self._row_prompt(ts, pr, dim=dim))
+			table.update_cell(pr_id, "status", self._right_cell(ts, pr_id, dim=dim))
 		except Exception:
 			pass
 
@@ -236,17 +236,21 @@ class PRMenuApp(App):
 			self._mark_loading(i, False)
 			return
 
-		option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
+		table = self.query_one(f"#{ts.table_id}", DataTable)
 		highlighted_id = None
-		if option_list.highlighted is not None and ts.prs:
-			if 0 <= option_list.highlighted < len(ts.prs):
-				highlighted_id = ts.prs[option_list.highlighted]["id"]
+		if ts.prs and table.row_count > 0:
+			cursor = table.cursor_row
+			if 0 <= cursor < len(ts.prs):
+				highlighted_id = ts.prs[cursor]["id"]
 
 		ts.prs = visible
-		option_list.clear_options()
-		option_list.add_options(
-			[Option(self._row_prompt(ts, pr), id=pr["id"]) for pr in visible]
-		)
+		table.clear()
+		for pr in visible:
+			table.add_row(
+				self._left_cell(pr),
+				self._right_cell(ts, pr["id"]),
+				key=pr["id"],
+			)
 
 		if visible:
 			next_index = 0
@@ -255,7 +259,7 @@ class PRMenuApp(App):
 					if pr["id"] == highlighted_id:
 						next_index = j
 						break
-			option_list.highlighted = next_index
+			table.move_cursor(row=next_index)
 			if i == self._active_index():
 				self._update_status(ts.config.status_bar(visible[next_index]))
 		else:
@@ -269,32 +273,32 @@ class PRMenuApp(App):
 		if i == self._active_index():
 			self._render_countdown()
 
-	def _tab_index_for_option_list(self, option_list_id: str | None) -> int | None:
-		if not option_list_id:
+	def _tab_index_for_table(self, table_id: str | None) -> int | None:
+		if not table_id:
 			return None
 		for i, ts in enumerate(self._tabs):
-			if ts.option_list_id == option_list_id:
+			if ts.table_id == table_id:
 				return i
 		return None
 
-	def on_option_list_option_highlighted(
-		self, event: OptionList.OptionHighlighted
+	def on_data_table_row_highlighted(
+		self, event: DataTable.RowHighlighted
 	) -> None:
-		i = self._tab_index_for_option_list(event.option_list.id)
+		i = self._tab_index_for_table(event.data_table.id)
 		if i is None or i != self._active_index():
 			return
 		ts = self._tabs[i]
-		if 0 <= event.option_index < len(ts.prs):
-			self._update_status(ts.config.status_bar(ts.prs[event.option_index]))
+		if 0 <= event.cursor_row < len(ts.prs):
+			self._update_status(ts.config.status_bar(ts.prs[event.cursor_row]))
 
-	def on_option_list_option_selected(
-		self, event: OptionList.OptionSelected
+	def on_data_table_row_selected(
+		self, event: DataTable.RowSelected
 	) -> None:
-		i = self._tab_index_for_option_list(event.option_list.id)
+		i = self._tab_index_for_table(event.data_table.id)
 		if i is None:
 			return
 		if "enter" in self._tabs[i].actions_by_key:
-			self._run_action_on_tab(i, event.option_index, "enter")
+			self._run_action_on_tab(i, event.cursor_row, "enter")
 
 	def on_tabbed_content_tab_activated(
 		self, event: TabbedContent.TabActivated
@@ -302,18 +306,15 @@ class PRMenuApp(App):
 		i = self._active_index()
 		ts = self._tabs[i]
 		self.title = ts.config.title
-		option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
-		if (
-			option_list.highlighted is not None
-			and 0 <= option_list.highlighted < len(ts.prs)
-		):
-			self._update_status(ts.config.status_bar(ts.prs[option_list.highlighted]))
+		table = self.query_one(f"#{ts.table_id}", DataTable)
+		if table.row_count > 0 and 0 <= table.cursor_row < len(ts.prs):
+			self._update_status(ts.config.status_bar(ts.prs[table.cursor_row]))
 		else:
 			self._update_status("")
 		self._render_countdown()
 		self._render_hotkeys()
 		self._set_breadcrumb("")
-		option_list.focus()
+		table.focus()
 
 	def action_previous_tab(self) -> None:
 		self._switch_tab(-1)
@@ -343,11 +344,11 @@ class PRMenuApp(App):
 		spec = self._tabs[i].actions_by_key.get(event.key)
 		if spec is None or event.key == "enter":
 			return
-		option_list = self.query_one(f"#{self._tabs[i].option_list_id}", OptionList)
-		if option_list.highlighted is None:
+		table = self.query_one(f"#{self._tabs[i].table_id}", DataTable)
+		if table.row_count == 0:
 			return
 		event.stop()
-		self._run_action_on_tab(i, option_list.highlighted, event.key)
+		self._run_action_on_tab(i, table.cursor_row, event.key)
 
 	def _run_action_on_tab(self, i: int, index: int, key: str) -> None:
 		ts = self._tabs[i]
@@ -403,17 +404,14 @@ class PRMenuApp(App):
 		ts.finishing_pr_ids.discard(pr_id)
 		ts.removed_ids.add(pr_id)
 		ts.prs = [p for p in ts.prs if p["id"] != pr_id]
-		option_list = self.query_one(f"#{ts.option_list_id}", OptionList)
+		table = self.query_one(f"#{ts.table_id}", DataTable)
 		try:
-			option_list.remove_option(pr_id)
+			table.remove_row(pr_id)
 		except Exception:
 			pass
 		if ts.prs:
-			new_index = min(
-				option_list.highlighted if option_list.highlighted is not None else 0,
-				len(ts.prs) - 1,
-			)
-			option_list.highlighted = new_index
+			new_index = min(table.cursor_row, len(ts.prs) - 1)
+			table.move_cursor(row=new_index)
 			if i == self._active_index():
 				self._update_status(ts.config.status_bar(ts.prs[new_index]))
 		elif i == self._active_index():
