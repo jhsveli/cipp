@@ -1,3 +1,4 @@
+from .abbreviate import short_repo
 from .cmd import exec, exec_json
 from .extract_author import extract_author
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age
@@ -43,6 +44,18 @@ def approve_and_merge(pr):
 	exec(['gh', 'pr', 'review', '--approve', str(pr['number']), '-R', REPO])
 	exec(['gh', 'pr', 'merge', '-s', '-R', REPO, str(pr['number'])])
 	return ActionResult.REMOVE
+
+
+# Title format: "<app>: <env> - <timestamp-sha>: <orig title> (#num) (author)"
+def app_name(pr):
+	return short_repo(pr['title'].split(':', 1)[0].strip())
+
+
+def short_title(pr):
+	# Strip the "<app>: <env> - " boilerplate, keep "<timestamp-sha>: <orig title>...".
+	title = pr['title']
+	after_app = title.split(':', 1)[1] if ':' in title else title
+	return after_app.split(' - ', 1)[1].strip() if ' - ' in after_app else title.strip()
 
 
 def author_label(pr):
@@ -118,7 +131,7 @@ TAB = TabConfig(
 	fetch=fetch_prs,
 	actions=[ActionSpec(key="enter", label="Approve + merge", handler=approve_and_merge)],
 	status_bar=lambda pr: pr['body'],
-	pr_label=lambda pr: pr['title'],
+	pr_label=short_title,
 	idle_label=author_label,
 	columns=[
 		ColumnSpec(
@@ -126,6 +139,12 @@ TAB = TabConfig(
 			label="Age",
 			width=6,
 			render=lambda pr: format_age(pr["createdAt"]),
+		),
+		ColumnSpec(
+			key="app",
+			label="App",
+			width=34,
+			render=app_name,
 		),
 	],
 )

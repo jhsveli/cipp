@@ -155,8 +155,10 @@ class PRMenuApp(App):
 		self.title = self._tabs[self._initial_tab].config.title
 		for ts in self._tabs:
 			table = self.query_one(f"#{ts.table_id}", DataTable)
-			for col in ts.config.columns:
-				table.add_column(col.label, key=col.key, width=col.width)
+			for j, col in enumerate(ts.config.columns):
+				# First column carries the unseen "● " marker, so reserve 2 extra cells.
+				width = col.width + 2 if j == 0 and col.width is not None else col.width
+				table.add_column(col.label, key=col.key, width=width)
 			table.add_column("PR", key="pr", width=10)
 			table.add_column("Status", key="status", width=20)
 		for i in range(len(self._tabs)):
@@ -235,11 +237,20 @@ class PRMenuApp(App):
 		countdown.update(text)
 		countdown.set_class(running, "running")
 
-	def _left_cell(self, ts: TabState, pr: dict) -> Text:
-		label = ts.config.pr_label(pr)
+	def _left_cell(self, ts: TabState, pr: dict) -> str:
+		return ts.config.pr_label(pr)
+
+	def _marker_col_key(self, ts: TabState) -> str:
+		return ts.config.columns[0].key if ts.config.columns else "pr"
+
+	def _marker_cell(self, ts: TabState, pr: dict) -> Text:
+		if ts.config.columns:
+			value = str(ts.config.columns[0].render(pr))
+		else:
+			value = ts.config.pr_label(pr)
 		if pr["id"] in ts.unseen_pr_ids:
-			return Text.assemble((f"{self.NEW_MARKER} ", "bold cyan"), label)
-		return Text(f"  {label}")
+			return Text.assemble((f"{self.NEW_MARKER} ", "bold cyan"), value)
+		return Text(f"  {value}")
 
 	def _right_cell(self, ts: TabState, pr_id: str, dim: bool = False) -> Text:
 		if pr_id in ts.acting_pr_ids:
@@ -327,9 +338,10 @@ class PRMenuApp(App):
 			ts.prs = visible
 			table = self.query_one(f"#{ts.table_id}", DataTable)
 			for pr in visible:
-				for col in ts.config.columns:
+				for j, col in enumerate(ts.config.columns):
+					value = self._marker_cell(ts, pr) if j == 0 else col.render(pr)
 					try:
-						table.update_cell(pr["id"], col.key, col.render(pr))
+						table.update_cell(pr["id"], col.key, value)
 					except Exception:
 						pass
 			self._mark_loading(i, False)
@@ -352,7 +364,10 @@ class PRMenuApp(App):
 		ts.prs = visible
 		table.clear()
 		for pr in visible:
-			cells = [col.render(pr) for col in ts.config.columns]
+			cells = [
+				self._marker_cell(ts, pr) if j == 0 else col.render(pr)
+				for j, col in enumerate(ts.config.columns)
+			]
 			cells.append(self._left_cell(ts, pr))
 			cells.append(self._right_cell(ts, pr["id"]))
 			table.add_row(*cells, key=pr["id"])
@@ -410,7 +425,7 @@ class PRMenuApp(App):
 			return
 		table = self.query_one(f"#{ts.table_id}", DataTable)
 		try:
-			table.update_cell(pr_id, "pr", self._left_cell(ts, pr))
+			table.update_cell(pr_id, self._marker_col_key(ts), self._marker_cell(ts, pr))
 		except Exception:
 			pass
 
