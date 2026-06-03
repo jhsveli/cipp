@@ -21,6 +21,11 @@ The action key is rejected on a row that is already acting; this is the row-leve
 ### Finishing
 A row's state immediately after an [[Acting]] action that returned `REMOVE` succeeded. Visualised as `✓ Done` in the `status` column for 2 seconds, then the cell dims briefly, then the row is removed from the table. Tracked by `TabState.finishing_pr_ids`. Action keys remain locked while finishing.
 
+### Unseen
+A PR that arrived in a [[Tab]]'s list from a fetch *after* the initial load and has not yet been looked at. Visualised by a `●` marker prefixing the `pr` column. A row clears its marker the moment its row is highlighted (or the cursor lands on it after a rebuild / tab activation). Tracked by `TabState.unseen_pr_ids`. The initial load never marks PRs unseen.
+
+When an inactive tab's PR count changes, a `●` is also appended after the count in its tab title (`TabState.count_changed`); it clears when the user switches to that tab.
+
 ### Loading
 A tab is fetching its PR list. Visualised by a spinner in the countdown widget at the top of the status frame. Tracked by `_loading_tabs` on the app. Distinct from [[Acting]] / [[Finishing]], which are per-row.
 

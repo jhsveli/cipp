@@ -66,6 +66,8 @@ class TabState:
 	removed_ids: set[str] = field(default_factory=set)
 	acting_pr_ids: dict[str, str] = field(default_factory=dict)
 	finishing_pr_ids: set[str] = field(default_factory=set)
+	unseen_pr_ids: set[str] = field(default_factory=set)
+	count_changed: bool = False
 	seconds_until_refresh: int = 0
 
 
@@ -100,6 +102,7 @@ class PRMenuApp(App):
 	]
 
 	SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+	NEW_MARKER = "●"
 
 	def __init__(
 		self,
@@ -162,6 +165,7 @@ class PRMenuApp(App):
 		self.set_interval(0.1, self._tick_spinner)
 		self._render_countdown()
 		self._render_hotkeys()
+		self._render_tab_labels()
 
 	def on_resize(self, event) -> None:
 		self._flex_pr_columns()
@@ -231,8 +235,11 @@ class PRMenuApp(App):
 		countdown.update(text)
 		countdown.set_class(running, "running")
 
-	def _left_cell(self, ts: TabState, pr: dict) -> str:
-		return ts.config.pr_label(pr)
+	def _left_cell(self, ts: TabState, pr: dict) -> Text:
+		label = ts.config.pr_label(pr)
+		if pr["id"] in ts.unseen_pr_ids:
+			return Text.assemble((f"{self.NEW_MARKER} ", "bold cyan"), label)
+		return Text(f"  {label}")
 
 	def _right_cell(self, ts: TabState, pr_id: str, dim: bool = False) -> Text:
 		if pr_id in ts.acting_pr_ids:
@@ -252,6 +259,19 @@ class PRMenuApp(App):
 			table.update_cell(pr_id, "status", self._right_cell(ts, pr_id, dim=dim))
 		except Exception:
 			pass
+
+	def _render_tab_labels(self) -> None:
+		try:
+			tabbed = self.query_one(TabbedContent)
+		except Exception:
+			return
+		for i, ts in enumerate(self._tabs):
+			try:
+				tab = tabbed.get_tab(f"tab-{i}")
+			except Exception:
+				continue
+			marker = f" {self.NEW_MARKER}" if ts.count_changed else ""
+			tab.label = f"{ts.config.name} ({len(ts.prs)}){marker}"
 
 	def _render_hotkeys(self) -> None:
 		key_label = {"enter": "↵", "escape": "esc"}
@@ -313,6 +333,7 @@ class PRMenuApp(App):
 					except Exception:
 						pass
 			self._mark_loading(i, False)
+			self._render_tab_labels()
 			return
 
 		table = self.query_one(f"#{ts.table_id}", DataTable)
@@ -321,6 +342,12 @@ class PRMenuApp(App):
 			cursor = table.cursor_row
 			if 0 <= cursor < len(ts.prs):
 				highlighted_id = ts.prs[cursor]["id"]
+
+		ts.unseen_pr_ids &= new_ids
+		if old_ids:
+			ts.unseen_pr_ids |= new_ids - old_ids
+			if len(new_ids) != len(old_ids):
+				ts.count_changed = i != self._active_index()
 
 		ts.prs = visible
 		table.clear()
@@ -340,6 +367,7 @@ class PRMenuApp(App):
 						break
 			table.move_cursor(row=next_index)
 			if i == self._active_index():
+				self._mark_seen(ts, visible[next_index]["id"])
 				self._render_preview(ts, visible[next_index])
 		else:
 			if i == self._active_index():
@@ -349,6 +377,7 @@ class PRMenuApp(App):
 		added = len(new_ids - old_ids)
 		if added and old_ids:
 			self._set_breadcrumb(f"+{added} new PR(s)", i)
+		self._render_tab_labels()
 		if i == self._active_index():
 			self._render_countdown()
 
@@ -368,7 +397,22 @@ class PRMenuApp(App):
 			return
 		ts = self._tabs[i]
 		if 0 <= event.cursor_row < len(ts.prs):
-			self._render_preview(ts, ts.prs[event.cursor_row])
+			pr = ts.prs[event.cursor_row]
+			self._mark_seen(ts, pr["id"])
+			self._render_preview(ts, pr)
+
+	def _mark_seen(self, ts: TabState, pr_id: str) -> None:
+		if pr_id not in ts.unseen_pr_ids:
+			return
+		ts.unseen_pr_ids.discard(pr_id)
+		pr = next((p for p in ts.prs if p["id"] == pr_id), None)
+		if pr is None:
+			return
+		table = self.query_one(f"#{ts.table_id}", DataTable)
+		try:
+			table.update_cell(pr_id, "pr", self._left_cell(ts, pr))
+		except Exception:
+			pass
 
 	def on_data_table_row_selected(
 		self, event: DataTable.RowSelected
@@ -385,12 +429,16 @@ class PRMenuApp(App):
 		i = self._active_index()
 		ts = self._tabs[i]
 		self.title = ts.config.title
+		ts.count_changed = False
 		table = self.query_one(f"#{ts.table_id}", DataTable)
 		if table.row_count > 0 and 0 <= table.cursor_row < len(ts.prs):
-			self._render_preview(ts, ts.prs[table.cursor_row])
+			pr = ts.prs[table.cursor_row]
+			self._mark_seen(ts, pr["id"])
+			self._render_preview(ts, pr)
 		else:
 			self._update_status("")
 		self._render_countdown()
+		self._render_tab_labels()
 		self._render_hotkeys()
 		self._set_breadcrumb("")
 		table.focus()
@@ -616,6 +664,7 @@ class PRMenuApp(App):
 				self._render_preview(ts, ts.prs[new_index])
 		elif i == self._active_index():
 			self._update_status("")
+		self._render_tab_labels()
 
 	def _on_action_error(self, i: int, pr: dict, error: Exception) -> None:
 		ts = self._tabs[i]
