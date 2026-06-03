@@ -6,6 +6,9 @@ Glossary of the language used in this codebase. Update inline as terms get pinne
 
 Trunk-based development: commit straight to `main`. Do not create feature branches unless something extreme warrants it.
 
+### Headless testing
+TUI can't be driven interactively from the agent. Verify render/state logic headlessly: stub `TAB.fetch` to return canned PR dicts (include every field the tab's labels read), drive with `app.run_test()` + `await pilot.pause()`, then assert on `table.get_row(key)`. Call `app._apply_prs(i, prs)` directly to simulate a later fetch (e.g. unseen-marker). Run via the pipx venv python: `$(pipx environment --value PIPX_LOCAL_VENVS)/cipp/bin/python`. Editable install (`pipx install -e .`) so edits need no reinstall.
+
 ## Terms
 
 ### PR
