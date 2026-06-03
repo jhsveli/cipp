@@ -16,10 +16,17 @@ class ActionResult(Enum):
 
 
 @dataclass
+class Safeguard:
+	when: Callable[[dict], bool]  # True => the action on this PR needs confirmation
+	descriptor: str = "unsafe"  # fills "Really {label} {descriptor} PR?"
+
+
+@dataclass
 class ActionSpec:
 	key: str
 	label: str
 	handler: Callable[[dict], ActionResult]
+	safeguard: Safeguard | None = None
 
 
 def format_age(created_at: str) -> str:
@@ -68,6 +75,7 @@ class TabState:
 	finishing_pr_ids: set[str] = field(default_factory=set)
 	unseen_pr_ids: set[str] = field(default_factory=set)
 	count_changed: bool = False
+	pending_confirm: tuple[str, str] | None = None  # (pr_id, action key) armed for confirm
 	seconds_until_refresh: int = 0
 
 
@@ -413,6 +421,9 @@ class PRMenuApp(App):
 		ts = self._tabs[i]
 		if 0 <= event.cursor_row < len(ts.prs):
 			pr = ts.prs[event.cursor_row]
+			if ts.pending_confirm and ts.pending_confirm[0] != pr["id"]:
+				ts.pending_confirm = None
+				self._set_breadcrumb("", i)
 			self._mark_seen(ts, pr["id"])
 			self._render_preview(ts, pr)
 
@@ -445,6 +456,7 @@ class PRMenuApp(App):
 		ts = self._tabs[i]
 		self.title = ts.config.title
 		ts.count_changed = False
+		ts.pending_confirm = None
 		table = self.query_one(f"#{ts.table_id}", DataTable)
 		if table.row_count > 0 and 0 <= table.cursor_row < len(ts.prs):
 			pr = ts.prs[table.cursor_row]
@@ -622,6 +634,16 @@ class PRMenuApp(App):
 		pr_id = pr["id"]
 		if pr_id in ts.acting_pr_ids or pr_id in ts.finishing_pr_ids:
 			return
+		if spec.safeguard and spec.safeguard.when(pr):
+			armed = ts.pending_confirm == (pr_id, key)
+			if not armed:
+				ts.pending_confirm = (pr_id, key)
+				self._set_breadcrumb(
+					f"Really {spec.label} {spec.safeguard.descriptor} PR? Press {key} to confirm!",
+					i,
+				)
+				return
+		ts.pending_confirm = None
 		ts.acting_pr_ids[pr_id] = spec.label
 		self._refresh_row(i, pr_id)
 		self.run_worker(

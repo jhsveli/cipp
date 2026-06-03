@@ -1,7 +1,7 @@
 from .abbreviate import short_repo
 from .cmd import exec, exec_json
 from .extract_author import resolve_author
-from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age
+from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
 
 CHECK_EMOJI = {
@@ -115,7 +115,15 @@ TAB = TabConfig(
 	fetch=fetch_prs,
 	actions=[
 		ActionSpec(key="a", label="Approve", handler=approve),
-		ActionSpec(key="m", label="Approve + merge", handler=approve_and_merge),
+		ActionSpec(
+			key="m",
+			label="Approve + merge",
+			handler=approve_and_merge,
+			safeguard=Safeguard(
+				when=lambda pr: pr["checkStatus"] != "SUCCESS",
+				descriptor="non-green",
+			),
+		),
 		ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
 	],
 	status_bar=lambda pr: pr['body'],

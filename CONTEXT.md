@@ -22,6 +22,9 @@ The *Reviews* and *Production* tabs are not disjoint by construction — *Review
 ### Action
 A keystroke-bound operation on a single PR — *Approve*, *Approve + merge*, *Open in browser*. Modeled by `ActionSpec`. Returns `ActionResult.REMOVE` (the PR should leave the list) or `ActionResult.KEEP` (the PR stays).
 
+### Safeguard
+An optional confirmation gate on an [[Action]] (`ActionSpec.safeguard`, a `Safeguard` with `when(pr) -> bool` + `descriptor`). When `when(pr)` is true, the first keypress arms it (per-row, `TabState.pending_confirm`) and shows breadcrumb `Really {label} {descriptor} PR? Press {key} to confirm!`; the same key on the same row fires it. Moving the cursor or switching tab disarms. *My PRs* `m` safeguards unapproved PRs; *Reviews* `m` safeguards non-green checks.
+
 ### Acting
 A row's state while one of its [[Action]]s is in flight. Per-row, per-PR — distinct from *loading* (the tab is fetching the list) and from any tab-wide busy state. Visualised by a spinner + the action's label in the `status` column. Tracked by `TabState.acting_pr_ids`.
 

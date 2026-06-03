@@ -1,6 +1,6 @@
 from .abbreviate import short_repo
 from .cmd import exec, exec_json
-from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age
+from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
 CHECK_EMOJI = {
 	'SUCCESS': '🟢',
@@ -115,7 +115,15 @@ TAB = TabConfig(
 	title="My open PRs",
 	fetch=fetch_prs,
 	actions=[
-		ActionSpec(key="m", label="Merge", handler=merge),
+		ActionSpec(
+			key="m",
+			label="Merge",
+			handler=merge,
+			safeguard=Safeguard(
+				when=lambda pr: review_state(pr) != 'APPROVED',
+				descriptor="unapproved",
+			),
+		),
 		ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
 	],
 	status_bar=lambda pr: pr['body'],
