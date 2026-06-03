@@ -34,9 +34,9 @@ The action key is rejected on a row that is already acting; this is the row-leve
 A row's state immediately after an [[Acting]] action that returned `REMOVE` succeeded. Visualised as `✓ Done` in the `status` column for 2 seconds, then the cell dims briefly, then the row is removed from the table. Tracked by `TabState.finishing_pr_ids`. Action keys remain locked while finishing.
 
 ### Unseen
-A PR that arrived in a [[Tab]]'s list from a fetch *after* the initial load and has not yet been looked at. Visualised by a `●` marker prefixing the `pr` column. A row clears its marker the moment its row is highlighted (or the cursor lands on it after a rebuild / tab activation). Tracked by `TabState.unseen_pr_ids`. The initial load never marks PRs unseen.
+A PR that arrived in a [[Tab]]'s list from a fetch *after* the initial load and has not yet been looked at. Visualised by a `●` marker prefixing the **first column** (Age / checks). A row clears its marker the moment its row is highlighted (or the cursor lands on it after a rebuild / tab activation). Tracked by `TabState.unseen_pr_ids`. The initial load never marks PRs unseen.
 
-When an inactive tab's PR count changes, a `●` is also appended after the count in its tab title (`TabState.count_changed`); it clears when the user switches to that tab.
+When an *inactive* tab gains a PR **or** any of its PRs' `state_signature` changes (e.g. checks or approval status), a `●` is appended after the count in its tab title (`TabState.has_updates`); it clears when the user switches to that tab. Each tab defines `TabConfig.state_signature` (Reviews: `checkStatus`; My PRs: `(checkStatus, review_state)`; Production: default `None` = count only); last-seen signatures live in `TabState.signatures`.
 
 ### Loading
 A tab is fetching its PR list. Visualised by a spinner in the countdown widget at the top of the status frame. Tracked by `_loading_tabs` on the app. Distinct from [[Acting]] / [[Finishing]], which are per-row.

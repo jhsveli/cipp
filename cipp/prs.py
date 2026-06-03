@@ -150,4 +150,5 @@ TAB = TabConfig(
 	pr_label=lambda pr: pr['title'],
 	idle_label=author_label,
 	diff_fetch=fetch_diff,
+	state_signature=lambda pr: pr['checkStatus'],
 )

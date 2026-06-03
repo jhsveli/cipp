@@ -62,6 +62,9 @@ class TabConfig:
 	pr_label: Callable[[dict], str] = lambda pr: f"{pr['number']:>6} {pr['title']}"
 	idle_label: Callable[[dict], str] = lambda pr: ""
 	diff_fetch: Callable[[dict], str] | None = None
+	# Per-PR signature of the state worth flagging on the tab title; a change
+	# (in checks, approval, etc.) marks an inactive tab as updated.
+	state_signature: Callable[[dict], Any] = lambda pr: None
 
 
 @dataclass
@@ -74,7 +77,8 @@ class TabState:
 	acting_pr_ids: dict[str, str] = field(default_factory=dict)
 	finishing_pr_ids: set[str] = field(default_factory=set)
 	unseen_pr_ids: set[str] = field(default_factory=set)
-	count_changed: bool = False
+	has_updates: bool = False
+	signatures: dict[str, Any] = field(default_factory=dict)  # pr_id -> last state_signature
 	pending_confirm: tuple[str, str] | None = None  # (pr_id, action key) armed for confirm
 	seconds_until_refresh: int = 0
 
@@ -289,7 +293,7 @@ class PRMenuApp(App):
 				tab = tabbed.get_tab(f"tab-{i}")
 			except Exception:
 				continue
-			marker = f" {self.NEW_MARKER}" if ts.count_changed else ""
+			marker = f" {self.NEW_MARKER}" if ts.has_updates else ""
 			tab.label = f"{ts.config.name} ({len(ts.prs)}){marker}"
 
 	def _render_hotkeys(self) -> None:
@@ -333,6 +337,19 @@ class PRMenuApp(App):
 		if i == self._active_index():
 			self._render_countdown()
 
+	def _detect_updates(self, i: int, visible: list[dict], had_prs: bool) -> bool:
+		# Compare each PR's state_signature against last seen; a new PR or a
+		# changed signature counts as an update. Refreshes stored signatures.
+		ts = self._tabs[i]
+		sig = ts.config.state_signature
+		new_sigs = {pr["id"]: sig(pr) for pr in visible}
+		changed = had_prs and any(
+			pid not in ts.signatures or ts.signatures[pid] != s
+			for pid, s in new_sigs.items()
+		)
+		ts.signatures = new_sigs
+		return changed and i != self._active_index()
+
 	def _apply_prs(self, i: int, prs: list[dict]) -> None:
 		ts = self._tabs[i]
 		if ts.acting_pr_ids or ts.finishing_pr_ids:
@@ -343,6 +360,8 @@ class PRMenuApp(App):
 		new_ids = {pr["id"] for pr in visible}
 
 		if old_ids == new_ids and ts.prs:
+			if self._detect_updates(i, visible, had_prs=True):
+				ts.has_updates = True
 			ts.prs = visible
 			table = self.query_one(f"#{ts.table_id}", DataTable)
 			for pr in visible:
@@ -366,8 +385,8 @@ class PRMenuApp(App):
 		ts.unseen_pr_ids &= new_ids
 		if old_ids:
 			ts.unseen_pr_ids |= new_ids - old_ids
-			if len(new_ids) != len(old_ids):
-				ts.count_changed = i != self._active_index()
+		if self._detect_updates(i, visible, had_prs=bool(old_ids)):
+			ts.has_updates = True
 
 		ts.prs = visible
 		table.clear()
@@ -455,7 +474,7 @@ class PRMenuApp(App):
 		i = self._active_index()
 		ts = self._tabs[i]
 		self.title = ts.config.title
-		ts.count_changed = False
+		ts.has_updates = False
 		ts.pending_confirm = None
 		table = self.query_one(f"#{ts.table_id}", DataTable)
 		if table.row_count > 0 and 0 <= table.cursor_row < len(ts.prs):
