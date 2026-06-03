@@ -1,3 +1,4 @@
+from . import slack
 from .abbreviate import short_repo
 from .cmd import exec, exec_json
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
@@ -50,6 +51,11 @@ def open_in_browser(pr):
 	return ActionResult.KEEP
 
 
+def post_to_slack(pr):
+	slack.post_message(f"PR ready for review: <{pr['url']}|{pr['title']}>")
+	return ActionResult.KEEP
+
+
 def fetch_diff(pr):
 	return exec(['gh', 'pr', 'diff', str(pr['number']), '-R', pr['repository']['nameWithOwner']])
 
@@ -99,6 +105,7 @@ pr_query = """{
 jq = """
 [.data.search.edges[].node | {
    id: .id,
+   url: .url,
    number: .number,
    state: .state,
    reviews: [.latestOpinionatedReviews.nodes[].state],
@@ -125,6 +132,9 @@ TAB = TabConfig(
 			),
 		),
 		ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
+		# Only offered when both Slack env vars are set; absent otherwise.
+		*([ActionSpec(key="p", label="Post to Slack", handler=post_to_slack)]
+		  if slack.enabled() else []),
 	],
 	status_bar=lambda pr: pr['body'],
 	columns=[

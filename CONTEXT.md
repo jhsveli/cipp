@@ -22,6 +22,9 @@ The *Reviews* and *Production* tabs are not disjoint by construction — *Review
 ### Action
 A keystroke-bound operation on a single PR — *Approve*, *Approve + merge*, *Open in browser*. Modeled by `ActionSpec`. Returns `ActionResult.REMOVE` (the PR should leave the list) or `ActionResult.KEEP` (the PR stays).
 
+### Slack post
+*My PRs* `p` action — posts the highlighted PR as a link to a Slack channel, as the user. Gated on both `CIPP_SLACK_MESSAGE_USER_TOKEN` (xoxp- user token, `chat:write`) and `CIPP_SLACK_MESSAGE_CHANNEL_ID`; the `ActionSpec` is appended only when `slack.enabled()`, so absent env vars = no `p` key. Posts via `curl` to `chat.postMessage` through `cmd.exec` (same shell-out path as `gh`); no new deps. Returns KEEP. `mine.py` jq emits `url` for the link.
+
 ### Safeguard
 An optional confirmation gate on an [[Action]] (`ActionSpec.safeguard`, a `Safeguard` with `when(pr) -> bool` + `descriptor`). When `when(pr)` is true, the first keypress arms it (per-row, `TabState.pending_confirm`) and shows breadcrumb `Really {label} {descriptor} PR? Press {key} to confirm!`; the same key on the same row fires it. Moving the cursor or switching tab disarms. *My PRs* `m` safeguards unapproved PRs; *Reviews* `m` safeguards non-green checks.
 
