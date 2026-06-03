@@ -98,6 +98,7 @@ class PRMenuApp(App):
 	#breadcrumb { width: 1fr; padding: 0 1; color: white; text-align: right; }
 	#breadcrumb.running { color: $success; }
 	.hotkeys { height: 1; padding: 0 1; color: $text; }
+	Tab.updated { color: white; text-style: not bold; }
 	DataTable { height: 1fr; }
 	"""
 
@@ -295,6 +296,7 @@ class PRMenuApp(App):
 				continue
 			marker = f" {self.NEW_MARKER}" if ts.has_updates else ""
 			tab.label = f"{ts.config.name} ({len(ts.prs)}){marker}"
+			tab.set_class(ts.has_updates, "updated")
 
 	def _render_hotkeys(self) -> None:
 		key_label = {"enter": "↵", "escape": "esc"}
