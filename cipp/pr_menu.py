@@ -373,6 +373,8 @@ class PRMenuApp(App):
 						table.update_cell(pr["id"], col.key, value)
 					except Exception:
 						pass
+				# The status column (idle_label) can change too, e.g. approval state.
+				self._refresh_row(i, pr["id"])
 			self._mark_loading(i, False)
 			self._render_tab_labels()
 			return
