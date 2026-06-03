@@ -53,7 +53,7 @@ def author_label(pr):
 
 
 pr_query = """{
-  search(query: "type:pr state:open review-requested:@me -label:image-updater sort:created-desc", type: ISSUE, first: 100) {
+  search(query: "type:pr state:open review-requested:@me -label:image-updater -author:aws-plattform-image-updater sort:created-desc", type: ISSUE, first: 100) {
     issueCount
     pageInfo {
       endCursor

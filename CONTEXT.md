@@ -2,6 +2,10 @@
 
 Glossary of the language used in this codebase. Update inline as terms get pinned down.
 
+## Workflow
+
+Trunk-based development: commit straight to `main`. Do not create feature branches unless something extreme warrants it.
+
 ## Terms
 
 ### PR
@@ -9,6 +13,8 @@ A GitHub pull request, as returned by the `gh` CLI. Each PR carries an `id` (Gra
 
 ### Tab
 One source of PRs (e.g. *Reviews*, *Production*). A tab owns a fetch query, a status-bar formatter, and a set of [[Action]]s. Modeled by `TabConfig` and held at runtime in `TabState`. Each tab renders its PRs in a Textual `DataTable` with a `pr` column (number + title) and a `status` column (right-aligned [[Acting]] / [[Finishing]] indicator).
+
+The *Reviews* and *Production* tabs are not disjoint by construction — *Reviews* pulls every open PR with `review-requested:@me` across all repos. Image-updater prod PRs are kept out by **author** (`-author:aws-plattform-image-updater`), not by repo or label alone: the `image-updater` label is applied asynchronously after creation, so a label-only filter left a ~0–30s window where prod PRs flashed in *Reviews*; the author is fixed at creation, closing the window. Excluding the whole configrepo would be too coarse — human-authored PRs there can still legitimately require review, so they must stay in *Reviews*.
 
 ### Action
 A keystroke-bound operation on a single PR — *Approve*, *Approve + merge*, *Open in browser*. Modeled by `ActionSpec`. Returns `ActionResult.REMOVE` (the PR should leave the list) or `ActionResult.KEEP` (the PR stays).
