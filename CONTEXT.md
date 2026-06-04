@@ -22,7 +22,7 @@ The *Reviews* and *Production* tabs are not disjoint by construction — *Review
 ### Action
 A keystroke-bound operation on a single PR — *Approve*, *Approve + merge*, *Open in browser*. Modeled by `ActionSpec`. Returns `ActionResult.REMOVE` (the PR should leave the list) or `ActionResult.KEEP` (the PR stays).
 
-An action with `ActionSpec.breadcrumb` set (a `pr -> str`) is a *breadcrumb action*: it skips the [[PR-status]] column entirely (no [[Acting]] spinner / [[Finishing]] ✓) and instead flashes its message in the [[App status]] breadcrumb, auto-fading after 3s. For instant ops where a per-row indicator is noise — e.g. *My PRs* `c` Copy URL. The fade is token-guarded (`_breadcrumb_token`) so a newer breadcrumb is never wiped by an older flash's timer.
+An action with `ActionSpec.breadcrumb` set (a `pr -> str`) is a *breadcrumb action*: it skips the [[PR-status]] column entirely (no [[Acting]] spinner / [[Finishing]] ✓) and instead flashes its message in the [[App status]] breadcrumb, auto-fading after 3s. For instant ops where a per-row indicator is noise — e.g. *My PRs* `c` Copy URL and `o` Open in browser. The fade is token-guarded (`_breadcrumb_token`) so a newer breadcrumb is never wiped by an older flash's timer.
 
 ### PR-status
 The right-aligned `status` column in a [[Tab]]'s `DataTable`. Per-row: shows the row's [[Acting]] spinner, [[Finishing]] `✓ Done`, or idle `idle_label`. "PR-status" always means this column — never the [[App status]] bar.

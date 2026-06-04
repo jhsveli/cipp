@@ -136,7 +136,12 @@ TAB = TabConfig(
 				descriptor="unapproved",
 			),
 		),
-		ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
+		ActionSpec(
+			key="o",
+			label="Open in browser",
+			handler=open_in_browser,
+			breadcrumb=lambda pr: f"Opened #{pr['number']} in browser",
+		),
 		ActionSpec(
 			key="c",
 			label="Copy URL",
