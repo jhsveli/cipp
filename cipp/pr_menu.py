@@ -139,6 +139,7 @@ class PRMenuApp(App):
 		self._breadcrumb_token = 0
 		self._flashed_action: tuple[int, str] | None = None  # (tab index, action key)
 		self._action_flash_token = 0
+		self._confirm_token = 0  # guards the per-arm 3s confirm timeout
 		self._tabs: list[TabState] = [
 			TabState(
 				config=cfg,
@@ -388,6 +389,13 @@ class PRMenuApp(App):
 		new_ids = {pr["id"] for pr in visible}
 
 		if old_ids == new_ids and ts.prs:
+			# A changed state_signature means the basis for an armed confirm moved
+			# under it — disarm. (_detect_updates is active-tab-gated, so check raw.)
+			sig = ts.config.state_signature
+			if ts.pending_confirm and any(
+				ts.signatures.get(pr["id"]) != sig(pr) for pr in visible
+			):
+				self._disarm_confirm(i)
 			if self._detect_updates(i, visible, had_prs=True):
 				ts.has_updates = True
 			ts.prs = visible
@@ -412,6 +420,8 @@ class PRMenuApp(App):
 			if 0 <= cursor < len(ts.prs):
 				highlighted_id = ts.prs[cursor]["id"]
 
+		# The PR set changed (rebuild) — the armed row may have moved or vanished.
+		self._disarm_confirm(i)
 		ts.unseen_pr_ids &= new_ids
 		if old_ids:
 			ts.unseen_pr_ids |= new_ids - old_ids
@@ -471,8 +481,7 @@ class PRMenuApp(App):
 		if 0 <= event.cursor_row < len(ts.prs):
 			pr = ts.prs[event.cursor_row]
 			if ts.pending_confirm and ts.pending_confirm[0] != pr["id"]:
-				ts.pending_confirm = None
-				self._set_breadcrumb("", i)
+				self._disarm_confirm(i)
 			self._mark_seen(ts, pr["id"])
 			self._render_preview(ts, pr)
 
@@ -505,7 +514,9 @@ class PRMenuApp(App):
 		ts = self._tabs[i]
 		self.title = ts.config.title
 		ts.has_updates = False
-		ts.pending_confirm = None
+		# Disarm any armed confirm (could be on the tab we just left).
+		for j in range(len(self._tabs)):
+			self._disarm_confirm(j)
 		table = self.query_one(f"#{ts.table_id}", DataTable)
 		if table.row_count > 0 and 0 <= table.cursor_row < len(ts.prs):
 			pr = ts.prs[table.cursor_row]
@@ -694,6 +705,26 @@ class PRMenuApp(App):
 		event.stop()
 		self._run_action_on_tab(i, table.cursor_row, event.key)
 
+	def _arm_confirm(self, i: int, pr_id: str, key: str, prompt: str) -> None:
+		ts = self._tabs[i]
+		ts.pending_confirm = (pr_id, key)
+		self._set_breadcrumb(prompt, i, variant="warn")
+		# Auto-disarm after 3s unless something disarms/re-arms first.
+		self._confirm_token += 1
+		token = self._confirm_token
+		self.set_timer(3.0, lambda: self._disarm_confirm(i, token=token))
+
+	def _disarm_confirm(self, i: int, token: int | None = None) -> None:
+		# token set => a timeout firing; ignore if a newer arm has superseded it.
+		if token is not None and token != self._confirm_token:
+			return
+		ts = self._tabs[i]
+		if ts.pending_confirm is None:
+			return
+		ts.pending_confirm = None
+		self._confirm_token += 1  # invalidate any pending timeout
+		self._set_breadcrumb("", i)
+
 	def _run_action_on_tab(self, i: int, index: int, key: str) -> None:
 		ts = self._tabs[i]
 		if not (0 <= index < len(ts.prs)):
@@ -709,15 +740,14 @@ class PRMenuApp(App):
 		if spec.safeguard and spec.safeguard.when(pr):
 			armed = ts.pending_confirm == (pr_id, key)
 			if not armed:
-				ts.pending_confirm = (pr_id, key)
-				self._set_breadcrumb(
+				self._arm_confirm(
+					i, pr_id, key,
 					f"⚠️  Really {spec.label} {spec.safeguard.descriptor} PR? Press {key} to confirm!",
-					i,
-					variant="warn",
 				)
 				return
 			was_confirmed = True
 		ts.pending_confirm = None
+		self._confirm_token += 1  # invalidate the arm's pending timeout
 		if was_confirmed:
 			# Flip the warning to a green ✅ acknowledgement that fades after 1s.
 			self._flash_breadcrumb(i, f"✅ Confirmed — {spec.label}", seconds=1.0, variant="confirmed")
