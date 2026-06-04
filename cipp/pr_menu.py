@@ -27,6 +27,10 @@ class ActionSpec:
 	label: str
 	handler: Callable[[dict], ActionResult]
 	safeguard: Safeguard | None = None
+	# When set, the action shows a transient (auto-fading) breadcrumb instead of
+	# the Acting spinner / Finishing ✓ in the PR-status column. For instant ops
+	# like copy-to-clipboard where a per-row indicator is noise.
+	breadcrumb: Callable[[dict], str] | None = None
 
 
 def format_age(created_at: str) -> str:
@@ -130,6 +134,7 @@ class PRMenuApp(App):
 		self._spinner_frame = 0
 		self._diff_mode_pr_ids: set[str] = set()
 		self._diff_cache: dict[str, tuple[str, str]] = {}
+		self._breadcrumb_token = 0
 		self._tabs: list[TabState] = [
 			TabState(
 				config=cfg,
@@ -631,9 +636,22 @@ class PRMenuApp(App):
 	) -> None:
 		if tab_index is not None and tab_index != self._active_index():
 			return
+		# Any explicit set invalidates a pending flash-clear (see _flash_breadcrumb).
+		self._breadcrumb_token += 1
 		breadcrumb = self.query_one("#breadcrumb", Static)
 		breadcrumb.update(text)
 		breadcrumb.set_class(running, "running")
+
+	def _flash_breadcrumb(self, i: int, text: str, seconds: float = 3.0) -> None:
+		# Show a transient message, then clear it after `seconds` — but only if no
+		# newer breadcrumb has replaced it in the meantime.
+		self._set_breadcrumb(text, i)
+		token = self._breadcrumb_token
+		self.set_timer(seconds, lambda: self._clear_breadcrumb_if(token, i))
+
+	def _clear_breadcrumb_if(self, token: int, i: int) -> None:
+		if self._breadcrumb_token == token:
+			self._set_breadcrumb("", i)
 
 	def on_key(self, event) -> None:
 		i = self._active_index()
@@ -667,8 +685,11 @@ class PRMenuApp(App):
 				)
 				return
 		ts.pending_confirm = None
-		ts.acting_pr_ids[pr_id] = spec.label
-		self._refresh_row(i, pr_id)
+		# Breadcrumb actions skip the PR-status spinner entirely; the row never
+		# enters Acting/Finishing, feedback lives only in the App status bar.
+		if spec.breadcrumb is None:
+			ts.acting_pr_ids[pr_id] = spec.label
+			self._refresh_row(i, pr_id)
 		self.run_worker(
 			lambda: self._invoke(i, spec, pr),
 			thread=True,
@@ -689,6 +710,9 @@ class PRMenuApp(App):
 	) -> None:
 		ts = self._tabs[i]
 		pr_id = pr["id"]
+		if spec.breadcrumb is not None:
+			self._flash_breadcrumb(i, spec.breadcrumb(pr))
+			return
 		ts.acting_pr_ids.pop(pr_id, None)
 		if result == ActionResult.REMOVE:
 			ts.finishing_pr_ids.add(pr_id)

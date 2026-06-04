@@ -137,7 +137,12 @@ TAB = TabConfig(
 			),
 		),
 		ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
-		ActionSpec(key="c", label="Copy URL", handler=copy_url),
+		ActionSpec(
+			key="c",
+			label="Copy URL",
+			handler=copy_url,
+			breadcrumb=lambda pr: f"Copied #{pr['number']} URL to clipboard",
+		),
 		# Only offered when both Slack env vars are set; absent otherwise.
 		*([ActionSpec(key="p", label="Post to Slack", handler=post_to_slack)]
 		  if slack.enabled() else []),
