@@ -1,6 +1,6 @@
 from . import slack
 from .abbreviate import short_repo
-from .cmd import exec, exec_json
+from .cmd import exec, exec_input, exec_json
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
 CHECK_EMOJI = {
@@ -48,6 +48,11 @@ def merge(pr):
 
 def open_in_browser(pr):
 	exec(['gh', 'pr', 'view', '--web', '-R', pr['repository']['nameWithOwner'], str(pr['number'])])
+	return ActionResult.KEEP
+
+
+def copy_url(pr):
+	exec_input(['pbcopy'], pr['url'])
 	return ActionResult.KEEP
 
 
@@ -132,6 +137,7 @@ TAB = TabConfig(
 			),
 		),
 		ActionSpec(key="o", label="Open in browser", handler=open_in_browser),
+		ActionSpec(key="c", label="Copy URL", handler=copy_url),
 		# Only offered when both Slack env vars are set; absent otherwise.
 		*([ActionSpec(key="p", label="Post to Slack", handler=post_to_slack)]
 		  if slack.enabled() else []),

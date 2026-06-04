@@ -8,7 +8,7 @@ Two tabs:
 
 - **Production** — image-updater PRs in the configrepo awaiting your review (filtered to mentions, dependabot, and SUCCESS checks). Enter approves and merges.
 - **Reviews** — PRs across GitHub where you're a requested reviewer, excluding image-updater. `a` approves, `m` approves and merges, `o` opens in browser.
-- **My PRs** — your own open PRs. `m` merges, `o` opens in browser, `p` posts the PR to Slack to notify the team (only when Slack is configured, see below).
+- **My PRs** — your own open PRs. `m` merges, `o` opens in browser, `c` copies the PR URL to the clipboard, `p` posts the PR to Slack to notify the team (only when Slack is configured, see below).
 
 ## Slack
 
