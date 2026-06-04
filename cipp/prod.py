@@ -1,7 +1,7 @@
 from .abbreviate import short_repo
 from .cmd import exec, exec_json
 from .extract_author import extract_author
-from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age
+from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
 AUTHOR = "aws-plattform-image-updater"
@@ -10,6 +10,24 @@ AUTHOR = "aws-plattform-image-updater"
 # The PRs can be tagged with either names, must check for both.
 # eg Jorgen Tu Sveli and Jørgen Tu Sveli
 config_name = exec(['git', 'config', '--global', '--get', 'user.name']).strip()
+
+# My identities, resolved once at load: local git name + the gh-authenticated
+# login and full name. Used to tell my own image-update PRs from teammates'.
+_gh_identity = exec_json(['gh', 'api', 'user', '--jq', '{login: .login, name: .name}'])
+MY_IDENTITIES = {
+	s.strip().casefold()
+	for s in (config_name, _gh_identity.get('login'), _gh_identity.get('name'))
+	if s and s.strip()
+}
+
+
+def is_mine(pr) -> bool:
+	# An image-update PR's GitHub author is always the bot; the human who made
+	# the change is encoded in the title. Match that against my identities.
+	name, is_bot = extract_author(pr)
+	if is_bot:
+		return False
+	return name.strip().casefold() in MY_IDENTITIES
 
 
 def fetch_prs():
@@ -129,7 +147,17 @@ TAB = TabConfig(
 	name="Production",
 	title="Pick an image update in prod for approval",
 	fetch=fetch_prs,
-	actions=[ActionSpec(key="enter", label="Approve + merge", handler=approve_and_merge)],
+	actions=[
+		ActionSpec(
+			key="enter",
+			label="Approve + merge",
+			handler=approve_and_merge,
+			safeguard=Safeguard(
+				when=lambda pr: not is_mine(pr),
+				descriptor="a teammate's",
+			),
+		),
+	],
 	status_bar=lambda pr: pr['body'],
 	pr_label=short_title,
 	idle_label=author_label,
