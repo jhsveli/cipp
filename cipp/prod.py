@@ -21,13 +21,15 @@ MY_IDENTITIES = {
 }
 
 
-def is_mine(pr) -> bool:
-	# An image-update PR's GitHub author is always the bot; the human who made
-	# the change is encoded in the title. Match that against my identities.
+def needs_confirm(pr) -> bool:
+	# Safeguard only a teammate's change. An image-update PR's GitHub author is
+	# always the bot; the human who made the change is encoded in the title, so
+	# match the resolved author against my identities. A resolved *bot* author is
+	# never gated, nor is my own change.
 	name, is_bot = extract_author(pr)
 	if is_bot:
 		return False
-	return name.strip().casefold() in MY_IDENTITIES
+	return name.strip().casefold() not in MY_IDENTITIES
 
 
 def fetch_prs():
@@ -153,7 +155,7 @@ TAB = TabConfig(
 			label="Approve + merge",
 			handler=approve_and_merge,
 			safeguard=Safeguard(
-				when=lambda pr: not is_mine(pr),
+				when=needs_confirm,
 				descriptor="a teammate's",
 			),
 		),
