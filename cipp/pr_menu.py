@@ -101,6 +101,8 @@ class PRMenuApp(App):
 	#countdown.running { color: $success; }
 	#breadcrumb { width: 1fr; padding: 0 1; color: white; text-align: right; }
 	#breadcrumb.running { color: $success; }
+	#breadcrumb.warn { color: $warning; }
+	#breadcrumb.confirmed { color: $success; }
 	.hotkeys { height: 1; padding: 0 1; color: $text; }
 	Tab.updated { color: white; text-style: not bold; }
 	DataTable { height: 1fr; }
@@ -651,7 +653,11 @@ class PRMenuApp(App):
 		self._render_preview(ts, pr)
 
 	def _set_breadcrumb(
-		self, text: str, tab_index: int | None = None, running: bool = False
+		self,
+		text: str,
+		tab_index: int | None = None,
+		running: bool = False,
+		variant: str | None = None,
 	) -> None:
 		if tab_index is not None and tab_index != self._active_index():
 			return
@@ -660,11 +666,16 @@ class PRMenuApp(App):
 		breadcrumb = self.query_one("#breadcrumb", Static)
 		breadcrumb.update(text)
 		breadcrumb.set_class(running, "running")
+		# Colour variants: "warn" (yellow, arming confirm), "confirmed" (green, fired).
+		breadcrumb.set_class(variant == "warn", "warn")
+		breadcrumb.set_class(variant == "confirmed", "confirmed")
 
-	def _flash_breadcrumb(self, i: int, text: str, seconds: float = 3.0) -> None:
+	def _flash_breadcrumb(
+		self, i: int, text: str, seconds: float = 3.0, variant: str | None = None
+	) -> None:
 		# Show a transient message, then clear it after `seconds` — but only if no
 		# newer breadcrumb has replaced it in the meantime.
-		self._set_breadcrumb(text, i)
+		self._set_breadcrumb(text, i, variant=variant)
 		token = self._breadcrumb_token
 		self.set_timer(seconds, lambda: self._clear_breadcrumb_if(token, i))
 
@@ -694,16 +705,22 @@ class PRMenuApp(App):
 		pr_id = pr["id"]
 		if pr_id in ts.acting_pr_ids or pr_id in ts.finishing_pr_ids:
 			return
+		was_confirmed = False
 		if spec.safeguard and spec.safeguard.when(pr):
 			armed = ts.pending_confirm == (pr_id, key)
 			if not armed:
 				ts.pending_confirm = (pr_id, key)
 				self._set_breadcrumb(
-					f"Really {spec.label} {spec.safeguard.descriptor} PR? Press {key} to confirm!",
+					f"⚠️  Really {spec.label} {spec.safeguard.descriptor} PR? Press {key} to confirm!",
 					i,
+					variant="warn",
 				)
 				return
+			was_confirmed = True
 		ts.pending_confirm = None
+		if was_confirmed:
+			# Flip the warning to a green ✅ acknowledgement that fades after 1s.
+			self._flash_breadcrumb(i, f"✅ Confirmed — {spec.label}", seconds=1.0, variant="confirmed")
 		self._flash_action(i, key)
 		# Breadcrumb actions skip the PR-status spinner entirely; the row never
 		# enters Acting/Finishing, feedback lives only in the App status bar.
