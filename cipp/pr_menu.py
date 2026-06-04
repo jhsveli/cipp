@@ -135,6 +135,8 @@ class PRMenuApp(App):
 		self._diff_mode_pr_ids: set[str] = set()
 		self._diff_cache: dict[str, tuple[str, str]] = {}
 		self._breadcrumb_token = 0
+		self._flashed_action: tuple[int, str] | None = None  # (tab index, action key)
+		self._action_flash_token = 0
 		self._tabs: list[TabState] = [
 			TabState(
 				config=cfg,
@@ -306,11 +308,28 @@ class PRMenuApp(App):
 	def _render_hotkeys(self) -> None:
 		key_label = {"enter": "↵", "escape": "esc"}
 		for i, ts in enumerate(self._tabs):
-			parts = [f"[b]{key_label.get(a.key, a.key)}[/b] {a.label}" for a in ts.config.actions]
+			flashed = self._flashed_action[1] if self._flashed_action and self._flashed_action[0] == i else None
+			parts = []
+			for a in ts.config.actions:
+				part = f"[b]{key_label.get(a.key, a.key)}[/b] {a.label}"
+				# Slight highlight on the just-triggered action; fades via token-guarded timer.
+				parts.append(f"[on $boost]{part}[/]" if a.key == flashed else part)
 			if ts.config.diff_fetch is not None:
 				parts.append("[b]d[/b] Toggle diff")
 			parts.extend(["[b]←/→[/b] Switch tab", "[b]q[/b] Quit"])
 			self.query_one(f"#hotkeys-{i}", Static).update("  ".join(parts))
+
+	def _flash_action(self, i: int, key: str, seconds: float = 0.4) -> None:
+		self._flashed_action = (i, key)
+		self._action_flash_token += 1
+		token = self._action_flash_token
+		self._render_hotkeys()
+		self.set_timer(seconds, lambda: self._clear_action_flash_if(token))
+
+	def _clear_action_flash_if(self, token: int) -> None:
+		if self._action_flash_token == token:
+			self._flashed_action = None
+			self._render_hotkeys()
 
 	def _refresh_tab(self, i: int) -> None:
 		self.run_worker(
@@ -685,6 +704,7 @@ class PRMenuApp(App):
 				)
 				return
 		ts.pending_confirm = None
+		self._flash_action(i, key)
 		# Breadcrumb actions skip the PR-status spinner entirely; the row never
 		# enters Acting/Finishing, feedback lives only in the App status bar.
 		if spec.breadcrumb is None:

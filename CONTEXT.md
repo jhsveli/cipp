@@ -33,6 +33,9 @@ The green-framed `#statusbar` (`Vertical`) above the preview pane. Holds one `#s
 ### Slack post
 *My PRs* `p` action — posts the highlighted PR as a link to a Slack channel, as the user. Gated on both `CIPP_SLACK_MESSAGE_USER_TOKEN` (xoxp- user token, `chat:write`) and `CIPP_SLACK_MESSAGE_CHANNEL_ID`; the `ActionSpec` is appended only when `slack.enabled()`, so absent env vars = no `p` key. Posts via `curl` to `chat.postMessage` through `cmd.exec` (same shell-out path as `gh`); no new deps. Returns KEEP. `mine.py` jq emits `url` for the link.
 
+### Action flash
+When an [[Action]] fires (after any [[Safeguard]] passes), its entry in that tab's hotkey legend gets a slight `$boost` highlight for 0.4s, then fades. Token-guarded (`_action_flash_token`) so a newer trigger isn't cleared by an older flash's timer; `_flashed_action` holds `(tab index, key)`. Applies to every action, spinner or [[App status]]-breadcrumb alike.
+
 ### Safeguard
 An optional confirmation gate on an [[Action]] (`ActionSpec.safeguard`, a `Safeguard` with `when(pr) -> bool` + `descriptor`). When `when(pr)` is true, the first keypress arms it (per-row, `TabState.pending_confirm`) and shows breadcrumb `Really {label} {descriptor} PR? Press {key} to confirm!`; the same key on the same row fires it. Moving the cursor or switching tab disarms. *My PRs* `m` safeguards unapproved PRs; *Reviews* `m` safeguards non-green checks.
 
