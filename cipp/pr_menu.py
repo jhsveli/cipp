@@ -314,13 +314,13 @@ class PRMenuApp(App):
 			flashed = self._flashed_action[1] if self._flashed_action and self._flashed_action[0] == i else None
 			parts = []
 			for a in ts.config.actions:
-				part = f"[b]{key_label.get(a.key, a.key)}[/b] {a.label}"
-				# Slight highlight on the just-triggered action; fades via token-guarded timer.
-				parts.append(f"[on $boost]{part}[/]" if a.key == flashed else part)
+				part = f" [b]{key_label.get(a.key, a.key)}[/b] {a.label} "
+				# Reverse fg/bg on the just-triggered action; padding is static so layout never shifts.
+				parts.append(f"[reverse]{part}[/]" if a.key == flashed else part)
 			if ts.config.diff_fetch is not None:
-				parts.append("[b]d[/b] Toggle diff")
-			parts.extend(["[b]←/→[/b] Switch tab", "[b]q[/b] Quit"])
-			self.query_one(f"#hotkeys-{i}", Static).update("  ".join(parts))
+				parts.append(" [b]d[/b] Toggle diff ")
+			parts.extend([" [b]←/→[/b] Switch tab ", " [b]q[/b] Quit "])
+			self.query_one(f"#hotkeys-{i}", Static).update(" ".join(parts))
 
 	def _flash_action(self, i: int, key: str, seconds: float = 0.4) -> None:
 		self._flashed_action = (i, key)
