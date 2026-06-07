@@ -91,10 +91,12 @@ class TabState:
 
 class PRMenuApp(App):
 	CSS = """
-	Screen { layout: vertical; layers: base filelist; }
+	Screen { layout: vertical; layers: base filelist; background: $surface; }
 	#statusbar { height: 3; border: round $success; padding: 0 1; }
 	#statusbar-row { height: 1; }
 	#tabs { height: 2fr; }
+	#tabs > ContentTabs { margin-top: 1; }
+	#tabs Tab.-active { background: $block-cursor-background; color: black; }
 	#status { height: 3fr; padding: 0 1; color: $text-muted; overflow-y: auto; border: round gray; border-title-color: gray; }
 	#status-diff { display: none; }
 	#status.diff-mode #status-md { display: none; }
@@ -107,7 +109,8 @@ class PRMenuApp(App):
 	#breadcrumb.confirmed { color: $success; }
 	.hotkeys { height: 1; padding: 0 1; color: $text; }
 	Tab.updated { color: white; text-style: not bold; }
-	DataTable { height: 1fr; }
+	DataTable { height: 1fr; background: $surface; }
+	DataTable:focus { background-tint: 0%; }
 	#filelist-overlay { layer: filelist; width: 100%; height: 100%; align: center middle; display: none; }
 	#filelist-overlay.visible { display: block; }
 	#filelist { width: auto; max-width: 80%; height: auto; max-height: 80%; padding: 0 1;
