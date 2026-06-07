@@ -55,5 +55,10 @@ When an *inactive* tab gains a PR **or** any of its PRs' `state_signature` chang
 ### Loading
 A tab is fetching its PR list. Visualised by a spinner in the `#countdown` widget of the [[App status]] bar. Tracked by `_loading_tabs` on the app. Distinct from [[Acting]] / [[Finishing]], which are per-row.
 
+### File jump
+`option`+`PgUp`/`PgDn` (and `alt`+ for Linux/Windows — same terminal bytes, but Textual resolves binding strings separately so both are bound) scrolls the preview pane (`#status`) to the previous/next file in a diff. Files are the `diff --git` headers; offsets are computed by wrapping each diff line at the `#status-diff` content width (`_diff_file_offsets`), so `scroll_to(y=offset)` lands the header at viewport top. Current file = last header at/above `scroll_y`; target clamps at the ends. No-op unless the highlighted PR is in diff mode with a cached diff.
+
+Each jump flashes a transient file-list overlay (`#filelist-overlay`, on its own `filelist` CSS layer) listing every file with the active one marked `▶`. It hides on whichever comes first: a **1.5s timeout** (token-guarded by `_filelist_token`, re-extended by a repeated jump) or **any non-jump key** — caught in `on_event` (overridden), since priority/widget-bound keys never reach `on_key`. Terminals don't report modifier-release, so hide-on-release isn't possible.
+
 ### Refresh pause
 While any row in a tab is [[Acting]] or [[Finishing]], that tab's countdown does not tick down and any in-flight fetch result is dropped on arrival. The pause prevents a refetch from rebuilding the table and wiping the row's spinner / `✓ Done` state. Refreshes resume once the tab has no acting or finishing rows.

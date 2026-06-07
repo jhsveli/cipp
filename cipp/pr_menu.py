@@ -3,10 +3,12 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable
 
+from rich.console import Console
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widgets import DataTable, Header, Markdown, Static, TabbedContent, TabPane
 
 
@@ -89,7 +91,7 @@ class TabState:
 
 class PRMenuApp(App):
 	CSS = """
-	Screen { layout: vertical; }
+	Screen { layout: vertical; layers: base filelist; }
 	#statusbar { height: 3; border: round $success; padding: 0 1; }
 	#statusbar-row { height: 1; }
 	#tabs { height: 2fr; }
@@ -106,6 +108,10 @@ class PRMenuApp(App):
 	.hotkeys { height: 1; padding: 0 1; color: $text; }
 	Tab.updated { color: white; text-style: not bold; }
 	DataTable { height: 1fr; }
+	#filelist-overlay { layer: filelist; width: 100%; height: 100%; align: center middle; display: none; }
+	#filelist-overlay.visible { display: block; }
+	#filelist { width: auto; max-width: 80%; height: auto; max-height: 80%; padding: 0 1;
+		border: round $accent; border-title-color: $accent; background: $panel; overflow-y: auto; }
 	"""
 
 	BINDINGS = [
@@ -116,8 +122,15 @@ class PRMenuApp(App):
 		Binding("d", "toggle_diff", "Toggle diff", priority=True),
 		Binding("shift+up", "preview_scroll_up", "Preview ↑", priority=True),
 		Binding("shift+down", "preview_scroll_down", "Preview ↓", priority=True),
-		Binding("ctrl+up", "preview_page_up", "Preview ⇞", priority=True),
-		Binding("ctrl+down", "preview_page_down", "Preview ⇟", priority=True),
+		Binding("shift+pageup", "preview_page_up", "Preview ⇞", priority=True),
+		Binding("shift+pagedown", "preview_page_down", "Preview ⇟", priority=True),
+		# Jump between files in the diff preview. option+ (macOS) and alt+ (Linux/Windows)
+		# send the same terminal sequence, but Textual resolves the binding strings
+		# separately, so both spellings are bound.
+		Binding("option+pageup", "jump_file(-1)", "Prev file", priority=True),
+		Binding("option+pagedown", "jump_file(1)", "Next file", priority=True),
+		Binding("alt+pageup", "jump_file(-1)", "Prev file", priority=True, show=False),
+		Binding("alt+pagedown", "jump_file(1)", "Next file", priority=True, show=False),
 	]
 
 	SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -140,6 +153,7 @@ class PRMenuApp(App):
 		self._flashed_action: tuple[int, str] | None = None  # (tab index, action key)
 		self._action_flash_token = 0
 		self._confirm_token = 0  # guards the per-arm 3s confirm timeout
+		self._filelist_token = 0  # guards the file-list overlay's auto-hide timer
 		self._tabs: list[TabState] = [
 			TabState(
 				config=cfg,
@@ -173,6 +187,9 @@ class PRMenuApp(App):
 		)
 		status.border_title = "Preview | Body"
 		yield status
+		filelist = Static("", id="filelist", markup=False)
+		filelist.border_title = "Files"
+		yield Container(filelist, id="filelist-overlay")
 
 	def on_mount(self) -> None:
 		self.title = self._tabs[self._initial_tab].config.title
@@ -644,6 +661,110 @@ class PRMenuApp(App):
 	def action_preview_page_down(self) -> None:
 		self.query_one("#status").scroll_page_down()
 
+	def _current_diff(self) -> str | None:
+		# The raw diff string for the highlighted PR, only while it's in diff mode.
+		i = self._active_index()
+		ts = self._tabs[i]
+		table = self.query_one(f"#{ts.table_id}", DataTable)
+		if not (0 <= table.cursor_row < len(ts.prs)):
+			return None
+		pr = ts.prs[table.cursor_row]
+		pr_id = pr["id"]
+		if pr_id not in self._diff_mode_pr_ids:
+			return None
+		cached = self._diff_cache.get(pr_id)
+		if not cached or cached[0] != pr.get("headSha"):
+			return None
+		return cached[1]
+
+	def _diff_file_offsets(self, diff: str) -> list[tuple[int, str]]:
+		# Map each `diff --git` file header to its visual line offset inside the
+		# preview, accounting for line-wrapping at the Static's content width — so
+		# scroll_to(y=offset) lands the header at the top of the viewport.
+		diff_widget = self.query_one("#status-diff", Static)
+		width = diff_widget.content_region.width
+		if width <= 0:
+			width = 80
+		console = Console(width=width)
+		offsets: list[tuple[int, str]] = []
+		y = 0
+		for line in diff.splitlines():
+			if line.startswith("diff --git"):
+				offsets.append((y, self._diff_file_name(line)))
+			wrapped = len(Text(line).wrap(console, width)) or 1
+			y += wrapped
+		return offsets
+
+	@staticmethod
+	def _diff_file_name(header: str) -> str:
+		# `diff --git a/path/to/file b/path/to/file` -> `path/to/file`.
+		parts = header.split()
+		for token in parts:
+			if token.startswith("b/"):
+				return token[2:]
+		if len(parts) >= 4 and parts[2].startswith("a/"):
+			return parts[2][2:]
+		return header
+
+	def action_jump_file(self, delta: int) -> None:
+		diff = self._current_diff()
+		if diff is None:
+			return
+		offsets = self._diff_file_offsets(diff)
+		if len(offsets) < 2:
+			# Single-file (or empty) diff — nothing to jump between, but still flash
+			# the list so the gesture isn't a silent no-op.
+			if offsets:
+				self._show_filelist(offsets, 0)
+			return
+		status = self.query_one("#status")
+		scroll_y = round(status.scroll_y)
+		# Current file = the last header at or above the current scroll position.
+		current = 0
+		for idx, (y, _name) in enumerate(offsets):
+			if y <= scroll_y + 1:
+				current = idx
+			else:
+				break
+		target = max(0, min(len(offsets) - 1, current + delta))
+		status.scroll_to(y=offsets[target][0], animate=False)
+		self._show_filelist(offsets, target)
+
+	def _show_filelist(self, offsets: list[tuple[int, str]], active: int) -> None:
+		body = Text()
+		for idx, (_y, name) in enumerate(offsets):
+			marker = "▶ " if idx == active else "  "
+			style = "bold cyan" if idx == active else "dim"
+			body.append(marker + name + "\n", style=style)
+		if body.plain.endswith("\n"):
+			body.remove_suffix("\n")
+		frame = self.query_one("#filelist", Static)
+		frame.border_title = f"Files ({active + 1}/{len(offsets)})"
+		frame.update(body)
+		self.query_one("#filelist-overlay").add_class("visible")
+		# Auto-hide after 1.5s; a repeated jump re-extends the window. Hiding also
+		# happens on any other keypress (see on_key), whichever comes first.
+		self._filelist_token += 1
+		token = self._filelist_token
+		self.set_timer(1.5, lambda: self._hide_filelist_if(token))
+
+	def _hide_filelist(self) -> None:
+		self._filelist_token += 1  # invalidate any pending auto-hide timer
+		try:
+			self.query_one("#filelist-overlay").remove_class("visible")
+		except Exception:
+			pass
+
+	def _hide_filelist_if(self, token: int) -> None:
+		if self._filelist_token == token:
+			self._hide_filelist()
+
+	def _filelist_visible(self) -> bool:
+		try:
+			return self.query_one("#filelist-overlay").has_class("visible")
+		except Exception:
+			return False
+
 	def action_toggle_diff(self) -> None:
 		i = self._active_index()
 		ts = self._tabs[i]
@@ -693,6 +814,23 @@ class PRMenuApp(App):
 	def _clear_breadcrumb_if(self, token: int, i: int) -> None:
 		if self._breadcrumb_token == token:
 			self._set_breadcrumb("", i)
+
+	_JUMP_FILE_KEYS = frozenset(
+		{"option+pageup", "option+pagedown", "alt+pageup", "alt+pagedown"}
+	)
+
+	async def on_event(self, event) -> None:
+		# App-level entry point for every event, including keys consumed by priority
+		# or widget bindings (which never reach on_key). Any key other than a
+		# file-jump dismisses the transient file-list overlay; the jump keys
+		# re-extend it via action_jump_file instead.
+		if (
+			isinstance(event, events.Key)
+			and self._filelist_visible()
+			and event.key not in self._JUMP_FILE_KEYS
+		):
+			self._hide_filelist()
+		await super().on_event(event)
 
 	def on_key(self, event) -> None:
 		i = self._active_index()
