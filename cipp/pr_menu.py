@@ -8,7 +8,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import DataTable, Header, Markdown, Static, TabbedContent, TabPane
 
 
@@ -91,7 +91,7 @@ class TabState:
 
 class PRMenuApp(App):
 	CSS = """
-	Screen { layout: vertical; layers: base filelist; background: $surface; }
+	Screen { layout: vertical; background: $surface; }
 	#statusbar { height: 3; border: round $success; padding: 0 1; }
 	#statusbar-row { height: 1; }
 	#tabs { height: 2fr; }
@@ -111,10 +111,9 @@ class PRMenuApp(App):
 	Tab.updated { color: white; text-style: not bold; }
 	DataTable { height: 1fr; background: $surface; }
 	DataTable:focus { background-tint: 0%; }
-	#filelist-overlay { layer: filelist; width: 100%; height: 100%; align: center middle; display: none; }
-	#filelist-overlay.visible { display: block; }
-	#filelist { width: auto; max-width: 80%; height: auto; max-height: 80%; padding: 0 1;
+	#filelist { dock: top; width: 100%; height: auto; max-height: 50%; padding: 0 1; display: none;
 		border: round $accent; border-title-color: $accent; background: $panel; overflow-y: auto; }
+	#filelist.visible { display: block; }
 	"""
 
 	BINDINGS = [
@@ -183,16 +182,16 @@ class PRMenuApp(App):
 			with Horizontal(id="statusbar-row"):
 				yield Static("", id="countdown")
 				yield Static("", id="breadcrumb")
+		filelist = Static("", id="filelist", markup=False)
+		filelist.border_title = "Files"
 		status = VerticalScroll(
+			filelist,
 			Markdown("", id="status-md"),
 			Static("", id="status-diff", markup=False),
 			id="status",
 		)
 		status.border_title = "Preview | Body"
 		yield status
-		filelist = Static("", id="filelist", markup=False)
-		filelist.border_title = "Files"
-		yield Container(filelist, id="filelist-overlay")
 
 	def on_mount(self) -> None:
 		self.title = self._tabs[self._initial_tab].config.title
@@ -744,7 +743,7 @@ class PRMenuApp(App):
 		frame = self.query_one("#filelist", Static)
 		frame.border_title = f"Files ({active + 1}/{len(offsets)})"
 		frame.update(body)
-		self.query_one("#filelist-overlay").add_class("visible")
+		frame.add_class("visible")
 		# Auto-hide after 1.5s; a repeated jump re-extends the window. Hiding also
 		# happens on any other keypress (see on_key), whichever comes first.
 		self._filelist_token += 1
@@ -754,7 +753,7 @@ class PRMenuApp(App):
 	def _hide_filelist(self) -> None:
 		self._filelist_token += 1  # invalidate any pending auto-hide timer
 		try:
-			self.query_one("#filelist-overlay").remove_class("visible")
+			self.query_one("#filelist", Static).remove_class("visible")
 		except Exception:
 			pass
 
@@ -764,7 +763,7 @@ class PRMenuApp(App):
 
 	def _filelist_visible(self) -> bool:
 		try:
-			return self.query_one("#filelist-overlay").has_class("visible")
+			return self.query_one("#filelist", Static).has_class("visible")
 		except Exception:
 			return False
 
