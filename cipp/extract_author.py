@@ -7,6 +7,7 @@ _PR_REF = re.compile(r"^#\d+$")
 KNOWN_BOTS = {
 	"aws-plattform-image-updater": "image-updater",
 	"dependabot": "dependabot",
+	"SpareBank 1 Utvikling Plattform Bot": "sb1ubot",
 }
 
 
