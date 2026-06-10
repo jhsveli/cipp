@@ -123,7 +123,7 @@ jq = """
 }]"""
 
 TAB = TabConfig(
-	name="My PRs",
+	name="Created",
 	title="My open PRs",
 	fetch=fetch_prs,
 	actions=[

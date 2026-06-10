@@ -110,7 +110,7 @@ jq = """
 }]"""
 
 TAB = TabConfig(
-	name="Reviews",
+	name="Review requests",
 	title="Open PRs awaiting review",
 	fetch=fetch_prs,
 	actions=[

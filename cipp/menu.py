@@ -8,8 +8,8 @@ def main():
 	parser = argparse.ArgumentParser(prog="cipp")
 	parser.add_argument("--tab", choices=["prod", "reviews", "mine"], default="prod")
 	args = parser.parse_args()
-	initial_tab = {"prod": 0, "reviews": 1, "mine": 2}[args.tab]
-	run_pr_menu([prod.TAB, prs.TAB, mine.TAB], initial_tab=initial_tab)
+	initial_tab = {"mine": 0, "reviews": 1, "prod": 2}[args.tab]
+	run_pr_menu([mine.TAB, prs.TAB, prod.TAB], initial_tab=initial_tab)
 
 
 if __name__ == "__main__":
