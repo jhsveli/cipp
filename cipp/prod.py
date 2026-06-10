@@ -33,16 +33,9 @@ def needs_confirm(pr) -> bool:
 	)
 
 
-def fetch_prs():
-	response = exec_json(['gh', 'api', 'graphql', '-f', f"query={pr_query}", '--jq', jq])
-
-	if 'errors' in response and len(response['errors']) > 0:
-		raise RuntimeError(
-			f"Query returned {len(response['errors'])} errors. First was: {response['errors'][0]['message']}"
-		)
-
-	github_username = response['user']['login']
-	github_name = response['user']['name']
+def post_process(slice):
+	github_username = slice['user']['login']
+	github_name = slice['user']['name']
 
 	def satisfies_criteria(pr):
 		search_content = pr['title'] + pr['body']
@@ -56,7 +49,7 @@ def fetch_prs():
 		)
 
 	return [
-		pr for pr in response['prs']
+		pr for pr in slice['prs']
 		if satisfies_criteria(pr) and pr['checkStatus'] == 'SUCCESS'
 	]
 
@@ -95,15 +88,9 @@ def author_label(pr):
 	return label
 
 
-pr_query = """{
-	viewer {
-		login
-		name
-	}
-	search(query: "type:pr state:open repo:sparebank1utvikling/app-configrepo-sb1u prod in:title review-requested:@me sort:created-desc", type: ISSUE, first: 100) {
-		edges {
-		  node {
-			... on PullRequest {
+SEARCH_QUERY = "type:pr state:open repo:sparebank1utvikling/app-configrepo-sb1u prod in:title review-requested:@me sort:created-desc"
+
+NODE_SELECTION = """
 			  url
 			  id
 			  number
@@ -129,20 +116,15 @@ pr_query = """{
 					}
 				  }
 				}
-			  }
-			}
-		  }
-		}
-	}
 """
 
-jq = """
+JQ_PROJECTION = """
 {
 	user: {
 		login: .data.viewer.login,
 		name: .data.viewer.name
 	},
-	prs: [.data.search.edges[].node | {
+	prs: [.data.prod.edges[].node | {
 	   id: .id,
 	   number: .number,
 	   state: .state,
@@ -159,7 +141,11 @@ jq = """
 TAB = TabConfig(
 	name="Production",
 	title="Pick an image update in prod for approval",
-	fetch=fetch_prs,
+	alias="prod",
+	search_query=SEARCH_QUERY,
+	node_selection=NODE_SELECTION,
+	jq_projection=JQ_PROJECTION,
+	post_process=post_process,
 	actions=[
 		ActionSpec(
 			key="enter",

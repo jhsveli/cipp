@@ -1,6 +1,6 @@
 from . import slack
 from .abbreviate import short_repo
-from .cmd import exec, exec_input, exec_json
+from .cmd import exec, exec_input
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
 CHECK_EMOJI = {
@@ -30,15 +30,8 @@ def review_state(pr) -> str:
 	return 'AWAITING'
 
 
-def fetch_prs():
-	response = exec_json(['gh', 'api', 'graphql', '-f', f"query={pr_query}", '--jq', jq])
-
-	if isinstance(response, dict) and 'errors' in response and len(response['errors']) > 0:
-		raise RuntimeError(
-			f"Query returned {len(response['errors'])} errors. First was: {response['errors'][0]['message']}"
-		)
-
-	return sorted(response, key=lambda pr: REVIEW_STATE[review_state(pr)][1])
+def post_process(prs):
+	return sorted(prs, key=lambda pr: REVIEW_STATE[review_state(pr)][1])
 
 
 def merge(pr):
@@ -69,11 +62,9 @@ def review_label(pr):
 	return REVIEW_STATE[review_state(pr)][0]
 
 
-pr_query = """{
-  search(query: "type:pr state:open author:@me sort:created-desc", type: ISSUE, first: 100) {
-    edges {
-      node {
-        ... on PullRequest {
+SEARCH_QUERY = "type:pr state:open author:@me sort:created-desc"
+
+NODE_SELECTION = """
           url
           id
           number
@@ -101,14 +92,10 @@ pr_query = """{
               }
             }
           }
-        }
-      }
-    }
-  }
-}"""
+"""
 
-jq = """
-[.data.search.edges[].node | {
+JQ_PROJECTION = """
+[.data.created.edges[].node | {
    id: .id,
    url: .url,
    number: .number,
@@ -125,7 +112,11 @@ jq = """
 TAB = TabConfig(
 	name="Created",
 	title="My open PRs",
-	fetch=fetch_prs,
+	alias="created",
+	search_query=SEARCH_QUERY,
+	node_selection=NODE_SELECTION,
+	jq_projection=JQ_PROJECTION,
+	post_process=post_process,
 	actions=[
 		ActionSpec(
 			key="m",

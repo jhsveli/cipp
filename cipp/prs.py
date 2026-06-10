@@ -1,5 +1,5 @@
 from .abbreviate import short_repo
-from .cmd import exec, exec_json
+from .cmd import exec
 from .extract_author import resolve_author
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
@@ -14,15 +14,8 @@ CHECK_EMOJI = {
 }
 
 
-def fetch_prs():
-	response = exec_json(['gh', 'api', 'graphql', '-f', f"query={pr_query}", '--jq', jq])
-
-	if isinstance(response, dict) and 'errors' in response and len(response['errors']) > 0:
-		raise RuntimeError(
-			f"Query returned {len(response['errors'])} errors. First was: {response['errors'][0]['message']}"
-		)
-
-	return response
+def post_process(prs):
+	return prs
 
 
 def approve(pr):
@@ -52,16 +45,9 @@ def author_label(pr):
 	return f"{emoji} {name}"
 
 
-pr_query = """{
-  search(query: "type:pr state:open review-requested:@me -label:image-updater -author:app/aws-plattform-image-updater sort:created-desc", type: ISSUE, first: 100) {
-    issueCount
-    pageInfo {
-      endCursor
-      startCursor
-    }
-    edges {
-      node {
-        ... on PullRequest {
+SEARCH_QUERY = "type:pr state:open review-requested:@me -label:image-updater -author:app/aws-plattform-image-updater sort:created-desc"
+
+NODE_SELECTION = """
           url
           id
           number
@@ -88,14 +74,10 @@ pr_query = """{
 	          }
 	        }
 	      }
-        }
-      }
-    }
-  }
-}"""
+"""
 
-jq = """
-[.data.search.edges[].node | {
+JQ_PROJECTION = """
+[.data.reviews.edges[].node | {
    id: .id,
    number: .number,
    state: .state,
@@ -112,7 +94,11 @@ jq = """
 TAB = TabConfig(
 	name="Review requests",
 	title="Open PRs awaiting review",
-	fetch=fetch_prs,
+	alias="reviews",
+	search_query=SEARCH_QUERY,
+	node_selection=NODE_SELECTION,
+	jq_projection=JQ_PROJECTION,
+	post_process=post_process,
 	actions=[
 		ActionSpec(key="a", label="Approve", handler=approve),
 		ActionSpec(

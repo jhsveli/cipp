@@ -7,7 +7,7 @@ Glossary of the language used in this codebase. Update inline as terms get pinne
 Trunk-based development: commit straight to `main`. Do not create feature branches unless something extreme warrants it.
 
 ### Headless testing
-TUI can't be driven interactively from the agent. Verify render/state logic headlessly: stub `TAB.fetch` to return canned PR dicts (include every field the tab's labels read), drive with `app.run_test()` + `await pilot.pause()`, then assert on `table.get_row(key)`. Call `app._apply_prs(i, prs)` directly to simulate a later fetch (e.g. unseen-marker). Run via the pipx venv python: `$(pipx environment --value PIPX_LOCAL_VENVS)/cipp/bin/python`. Editable install (`pipx install -e .`) so edits need no reinstall.
+TUI can't be driven interactively from the agent. Verify render/state logic headlessly: drive with `app.run_test()` + `await pilot.pause()`, then assert on `table.get_row(key)`. Call `app._apply_prs(i, prs)` directly with canned PR dicts (include every field the tab's labels read) to simulate a fetch result (e.g. unseen-marker) without hitting the network. To exercise the [[combined fetch]] end-to-end, monkeypatch `cipp.pr_menu.exec_json`. Run via the pipx venv python: `$(pipx environment --value PIPX_LOCAL_VENVS)/cipp/bin/python`. Editable install (`pipx install -e .`) so edits need no reinstall.
 
 ## Terms
 
@@ -15,7 +15,10 @@ TUI can't be driven interactively from the agent. Verify render/state logic head
 A GitHub pull request, as returned by the `gh` CLI. Each PR carries an `id` (GraphQL node ID), `number`, `title`, `body`, `repository`, `author`, `createdAt`, and `checkStatus`.
 
 ### Tab
-One source of PRs (e.g. *Reviews*, *Production*). A tab owns a fetch query, a status-bar formatter, and a set of [[Action]]s. Modeled by `TabConfig` and held at runtime in `TabState`. Each tab renders its PRs in a Textual `DataTable` with a `pr` column (number + title) and a [[PR-status]] column (right-aligned [[Acting]] / [[Finishing]] indicator).
+One source of PRs (e.g. *Reviews*, *Production*). A tab contributes one aliased block to the [[combined fetch]] (`alias`, `search_query`, `node_selection`, `jq_projection`) plus a `post_process` that turns its response slice into PRs, a status-bar formatter, and a set of [[Action]]s. Modeled by `TabConfig` and held at runtime in `TabState`. Each tab renders its PRs in a Textual `DataTable` with a `pr` column (number + title) and a [[PR-status]] column (right-aligned [[Acting]] / [[Finishing]] indicator).
+
+### Combined fetch
+All tabs share **one** GraphQL request per refresh cycle, not one-per-tab. `PRMenuApp._combined_query()` emits a shared `viewer` plus one aliased `search()` block per tab; `_combined_jq()` stitches each tab's `jq_projection` under its alias. `_fetch_all()` fires the single `gh api graphql` call, then `_apply_all()` runs each tab's `post_process` over its slice and applies the rows. One unified countdown / loading flag / failure flag drives all tabs (app-level, not per-tab) — so a failure orange-borders the status area for every tab, clearing on the next successful cycle. jq fragments are kept per-tab (rooted at `.data.<alias>`); a later refactor may move projection into Python.
 
 The *Reviews* and *Production* tabs are not disjoint by construction — *Reviews* pulls every open PR with `review-requested:@me` across all repos. Image-updater prod PRs are kept out by **author** (`-author:app/aws-plattform-image-updater` — the `app/` prefix is required because the bot is a GitHub App; without it the author does not resolve and the unresolvable `-author:` qualifier zeroes the entire result set), not by repo or label alone: the `image-updater` label is applied asynchronously after creation, so a label-only filter left a ~0–30s window where prod PRs flashed in *Reviews*; the author is fixed at creation, closing the window. Excluding the whole configrepo would be too coarse — human-authored PRs there can still legitimately require review, so they must stay in *Reviews*.
 

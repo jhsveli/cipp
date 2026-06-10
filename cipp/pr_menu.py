@@ -11,6 +11,8 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import DataTable, Header, Markdown, Static, TabbedContent, TabPane
 
+from .cmd import exec_json
+
 
 class ActionResult(Enum):
 	REMOVE = "remove"
@@ -61,7 +63,18 @@ class ColumnSpec:
 class TabConfig:
 	name: str
 	title: str
-	fetch: Callable[[], list[dict]]
+	# All tabs share one GraphQL request: each contributes an aliased search()
+	# block. `alias` keys both the query block and this tab's slice of the
+	# combined response. `search_query` is the search() query argument;
+	# `node_selection` the fields inside `... on PullRequest { }`;
+	# `jq_projection` a jq expr over the full response (reads .data.<alias>,
+	# and .data.viewer if needed) producing this tab's slice; `post_process`
+	# turns that slice into PRs.
+	alias: str
+	search_query: str
+	node_selection: str
+	jq_projection: str
+	post_process: Callable[[Any], list[dict]]
 	actions: list[ActionSpec]
 	status_bar: Callable[[dict], str] = lambda pr: ""
 	columns: list[ColumnSpec] = field(default_factory=list)
@@ -86,8 +99,6 @@ class TabState:
 	has_updates: bool = False
 	signatures: dict[str, Any] = field(default_factory=dict)  # pr_id -> last state_signature
 	pending_confirm: tuple[str, str] | None = None  # (pr_id, action key) armed for confirm
-	seconds_until_refresh: int = 0
-	fetch_failed: bool = False  # last fetch raised; clears on next success
 
 
 class PRMenuApp(App):
@@ -149,7 +160,11 @@ class PRMenuApp(App):
 		super().__init__()
 		self._poll_seconds = poll_seconds
 		self._initial_tab = initial_tab
-		self._loading_tabs: set[int] = set()
+		# One combined fetch drives all tabs, so loading / countdown / failure
+		# state is app-level rather than per-tab.
+		self._loading = False
+		self._seconds_until_refresh = poll_seconds
+		self._fetch_failed = False  # last combined fetch raised; clears on success
 		self._spinner_frame = 0
 		self._diff_mode_pr_ids: set[str] = set()
 		self._diff_cache: dict[str, tuple[str, str]] = {}
@@ -163,7 +178,6 @@ class PRMenuApp(App):
 				config=cfg,
 				table_id=f"table-{i}",
 				actions_by_key={a.key: a for a in cfg.actions},
-				seconds_until_refresh=poll_seconds,
 			)
 			for i, cfg in enumerate(tabs)
 		]
@@ -205,8 +219,7 @@ class PRMenuApp(App):
 				table.add_column(col.label, key=col.key, width=width)
 			table.add_column("PR", key="pr", width=10)
 			table.add_column("Status", key="status", width=20)
-		for i in range(len(self._tabs)):
-			self._refresh_tab(i)
+		self._refresh_all()
 		self.set_interval(1, self._tick_countdown)
 		self.set_interval(0.1, self._tick_spinner)
 		self._render_countdown()
@@ -246,22 +259,23 @@ class PRMenuApp(App):
 		return 0
 
 	def _tick_countdown(self) -> None:
-		for i, ts in enumerate(self._tabs):
-			if i in self._loading_tabs:
-				continue
-			if ts.acting_pr_ids or ts.finishing_pr_ids:
-				continue
-			ts.seconds_until_refresh -= 1
-			if ts.seconds_until_refresh <= 0:
-				self._refresh_tab(i)
+		# One countdown drives the single combined fetch. Pause it while loading
+		# or while any tab has a PR mid-action (acting/finishing).
+		if self._loading:
+			return
+		if any(ts.acting_pr_ids or ts.finishing_pr_ids for ts in self._tabs):
+			return
+		self._seconds_until_refresh -= 1
+		if self._seconds_until_refresh <= 0:
+			self._refresh_all()
 		self._render_countdown()
 
 	def _tick_spinner(self) -> None:
 		any_acting = any(ts.acting_pr_ids for ts in self._tabs)
-		if not self._loading_tabs and not any_acting:
+		if not self._loading and not any_acting:
 			return
 		self._spinner_frame = (self._spinner_frame + 1) % len(self.SPINNER_FRAMES)
-		if self._loading_tabs:
+		if self._loading:
 			self._render_countdown()
 		if any_acting:
 			for i, ts in enumerate(self._tabs):
@@ -269,17 +283,15 @@ class PRMenuApp(App):
 					self._refresh_row(i, pr_id)
 
 	def _render_countdown(self) -> None:
-		i = self._active_index()
-		ts = self._tabs[i]
+		ts = self._tabs[self._active_index()]
 		count = f"{len(ts.prs)} PR(s) · "
-		running = i in self._loading_tabs
-		if running:
+		if self._loading:
 			text = f"{count}{self.SPINNER_FRAMES[self._spinner_frame]} Updating"
 		else:
-			text = f"{count}Updating in {ts.seconds_until_refresh}s…"
+			text = f"{count}Updating in {self._seconds_until_refresh}s…"
 		countdown = self.query_one("#countdown", Static)
 		countdown.update(text)
-		countdown.set_class(running, "running")
+		countdown.set_class(self._loading, "running")
 
 	def _left_cell(self, ts: TabState, pr: dict) -> str:
 		return ts.config.pr_label(pr)
@@ -355,49 +367,79 @@ class PRMenuApp(App):
 			self._flashed_action = None
 			self._render_hotkeys()
 
-	def _refresh_tab(self, i: int) -> None:
+	def _combined_query(self) -> str:
+		# One GraphQL doc: shared viewer + one aliased search() block per tab.
+		blocks = [
+			f"""  {ts.config.alias}: search(query: "{ts.config.search_query}", type: ISSUE, first: 100) {{
+    edges {{ node {{ ... on PullRequest {{ {ts.config.node_selection} }} }} }}
+  }}"""
+			for ts in self._tabs
+		]
+		return "{\n  viewer { login name }\n" + "\n".join(blocks) + "\n}"
+
+	def _combined_jq(self) -> str:
+		# Project each tab's slice under its alias; each fragment reads the full
+		# response (.data.<alias>, and .data.viewer where needed).
+		parts = [f"  {ts.config.alias}: ({ts.config.jq_projection})" for ts in self._tabs]
+		return "{\n" + ",\n".join(parts) + "\n}"
+
+	def _refresh_all(self) -> None:
 		self.run_worker(
-			lambda: self._fetch_tab(i),
+			self._fetch_all,
 			thread=True,
 			exclusive=True,
-			group=f"fetch-{i}",
+			group="fetch",
 		)
 
-	def _fetch_tab(self, i: int) -> None:
-		self.call_from_thread(self._reset_countdown, i)
-		self.call_from_thread(self._mark_loading, i, True)
+	def _fetch_all(self) -> None:
+		self.call_from_thread(self._reset_countdown)
+		self.call_from_thread(self._mark_loading, True)
 		try:
-			prs = self._tabs[i].config.fetch()
+			response = exec_json([
+				'gh', 'api', 'graphql',
+				'-f', f"query={self._combined_query()}",
+				'--jq', self._combined_jq(),
+			])
 		except Exception as e:
-			self.call_from_thread(self._mark_loading, i, False)
-			self.call_from_thread(self._mark_fetch_failed, i, True)
-			self.call_from_thread(self._set_breadcrumb, f"fetch failed: {e}", i)
+			self.call_from_thread(self._mark_loading, False)
+			self.call_from_thread(self._mark_fetch_failed, True)
+			self.call_from_thread(self._set_breadcrumb, f"fetch failed: {e}")
 			return
-		self.call_from_thread(self._mark_fetch_failed, i, False)
-		self.call_from_thread(self._apply_prs, i, prs)
+		self.call_from_thread(self._apply_all, response)
 
-	def _mark_loading(self, i: int, loading: bool) -> None:
-		if loading:
-			self._loading_tabs.add(i)
-		else:
-			self._loading_tabs.discard(i)
-		if i == self._active_index():
-			self._render_countdown()
+	def _apply_all(self, response: dict) -> None:
+		# Run each tab's post_process over its slice; a single tab's transform
+		# failing marks the whole fetch failed (the combined request is atomic).
+		try:
+			results = [
+				(i, ts.config.post_process(response.get(ts.config.alias)))
+				for i, ts in enumerate(self._tabs)
+			]
+		except Exception as e:
+			self._mark_loading(False)
+			self._mark_fetch_failed(True)
+			self._set_breadcrumb(f"fetch failed: {e}")
+			return
+		self._mark_fetch_failed(False)
+		for i, prs in results:
+			self._apply_prs(i, prs)
+		self._mark_loading(False)
 
-	def _mark_fetch_failed(self, i: int, failed: bool) -> None:
-		self._tabs[i].fetch_failed = failed
-		if i == self._active_index():
-			self._render_statusbar()
+	def _mark_loading(self, loading: bool) -> None:
+		self._loading = loading
+		self._render_countdown()
+
+	def _mark_fetch_failed(self, failed: bool) -> None:
+		self._fetch_failed = failed
+		self._render_statusbar()
 
 	def _render_statusbar(self) -> None:
-		# Orange border on the active tab's status area while its last fetch failed.
-		ts = self._tabs[self._active_index()]
-		self.query_one("#statusbar").set_class(ts.fetch_failed, "error")
+		# Orange border on the status area while the last combined fetch failed.
+		self.query_one("#statusbar").set_class(self._fetch_failed, "error")
 
-	def _reset_countdown(self, i: int) -> None:
-		self._tabs[i].seconds_until_refresh = self._poll_seconds
-		if i == self._active_index():
-			self._render_countdown()
+	def _reset_countdown(self) -> None:
+		self._seconds_until_refresh = self._poll_seconds
+		self._render_countdown()
 
 	def _detect_updates(self, i: int, visible: list[dict], had_prs: bool) -> bool:
 		# Compare each PR's state_signature against last seen; a new PR or a
@@ -415,7 +457,6 @@ class PRMenuApp(App):
 	def _apply_prs(self, i: int, prs: list[dict]) -> None:
 		ts = self._tabs[i]
 		if ts.acting_pr_ids or ts.finishing_pr_ids:
-			self._mark_loading(i, False)
 			return
 		visible = [pr for pr in prs if pr["id"] not in ts.removed_ids]
 		old_ids = {pr["id"] for pr in ts.prs}
@@ -442,7 +483,6 @@ class PRMenuApp(App):
 						pass
 				# The status column (idle_label) can change too, e.g. approval state.
 				self._refresh_row(i, pr["id"])
-			self._mark_loading(i, False)
 			self._render_tab_labels()
 			return
 
@@ -488,7 +528,6 @@ class PRMenuApp(App):
 			if i == self._active_index():
 				self._update_status("")
 
-		self._mark_loading(i, False)
 		added = len(new_ids - old_ids)
 		if added and old_ids:
 			self._set_breadcrumb(f"+{added} new PR(s)", i)
