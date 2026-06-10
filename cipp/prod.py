@@ -1,6 +1,6 @@
 from .abbreviate import short_repo
 from .cmd import exec, exec_json
-from .extract_author import extract_author
+from .extract_author import extract_authors
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
@@ -26,10 +26,11 @@ def needs_confirm(pr) -> bool:
 	# always the bot; the human who made the change is encoded in the title, so
 	# match the resolved author against my identities. A resolved *bot* author is
 	# never gated, nor is my own change.
-	name, is_bot = extract_author(pr)
-	if is_bot:
-		return False
-	return name.strip().casefold() not in MY_IDENTITIES
+	# Confirm if *any* resolved author is a teammate (non-bot, not me).
+	return any(
+		not is_bot and name.strip().casefold() not in MY_IDENTITIES
+		for name, is_bot in extract_authors(pr)
+	)
 
 
 def fetch_prs():
@@ -79,9 +80,19 @@ def short_title(pr):
 
 
 def author_label(pr):
-	name, is_bot = extract_author(pr)
+	authors = extract_authors(pr)
+	name, is_bot = authors[0]
 	emoji = '🤖' if is_bot else '🧠'
-	return f"{emoji} {name}"
+	label = f"{emoji} {name}"
+	rest = authors[1:]
+	if rest:
+		icons = ""
+		if any(b for _, b in rest):
+			icons += "🤖"
+		if any(not b for _, b in rest):
+			icons += "🧠"
+		label += f" + {len(rest)} {icons}"
+	return label
 
 
 pr_query = """{

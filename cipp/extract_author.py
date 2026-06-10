@@ -6,6 +6,7 @@ _PR_REF = re.compile(r"^#\d+$")
 
 KNOWN_BOTS = {
 	"aws-plattform-image-updater": "image-updater",
+	"dependabot": "dependabot",
 }
 
 
@@ -14,10 +15,13 @@ def from_body(body: str) -> str | None:
 	return m.group(1) if m else None
 
 
-def from_title(title: str) -> str | None:
+def from_title(title: str) -> list[str]:
 	matches = [m.group(1) for m in _PAREN.finditer(title or "")]
 	matches = [m for m in matches if not _PR_REF.match(m)]
-	return matches[-1] if matches else None
+	if not matches:
+		return []
+	# The last paren group holds the author(s); it may be a comma-separated list.
+	return [a.strip() for a in matches[-1].split(",") if a.strip()]
 
 
 def resolve_author(raw: str, is_bot: bool = False) -> tuple[str, bool]:
@@ -28,6 +32,13 @@ def resolve_author(raw: str, is_bot: bool = False) -> tuple[str, bool]:
 	return raw, is_bot
 
 
+def extract_authors(pr: dict) -> list[tuple[str, bool]]:
+	raws = from_title(pr.get("title", ""))
+	if not raws:
+		body = from_body(pr.get("body", ""))
+		raws = [body] if body else [pr["author"]]
+	return [resolve_author(r) for r in raws]
+
+
 def extract_author(pr: dict) -> tuple[str, bool]:
-	raw = from_title(pr.get("title", "")) or from_body(pr.get("body", "")) or pr["author"]
-	return resolve_author(raw)
+	return extract_authors(pr)[0]
