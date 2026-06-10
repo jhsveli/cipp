@@ -103,7 +103,7 @@ class TabState:
 
 class PRMenuApp(App):
 	CSS = """
-	Screen { layout: vertical; background: $surface; }
+	Screen { layout: vertical; background: $surface; layers: base overlay; }
 	#statusbar { height: 3; border: round $success; padding: 0 1; }
 	#statusbar.error { border: round $warning; }
 	#statusbar-row { height: 1; }
@@ -124,7 +124,7 @@ class PRMenuApp(App):
 	Tab.updated { color: white; text-style: not bold; }
 	DataTable { height: 1fr; background: $surface; }
 	DataTable:focus { background-tint: 0%; }
-	#filelist { dock: top; width: 100%; height: auto; max-height: 50%; padding: 0 1; display: none;
+	#filelist { layer: overlay; dock: top; margin-top: 1; width: 100%; height: auto; max-height: 40%; padding: 0 1; display: none;
 		border: round $accent; border-title-color: $accent; background: $panel; overflow-y: auto; }
 	#filelist.visible { display: block; }
 	"""
@@ -194,14 +194,14 @@ class PRMenuApp(App):
 						zebra_stripes=False,
 					)
 					yield Static("", id=f"hotkeys-{i}", classes="hotkeys")
+		filelist = Static("", id="filelist", markup=False)
+		filelist.border_title = "Files"
+		yield filelist
 		with Vertical(id="statusbar"):
 			with Horizontal(id="statusbar-row"):
 				yield Static("", id="countdown")
 				yield Static("", id="breadcrumb")
-		filelist = Static("", id="filelist", markup=False)
-		filelist.border_title = "Files"
 		status = VerticalScroll(
-			filelist,
 			Markdown("", id="status-md"),
 			Static("", id="status-diff", markup=False),
 			id="status",
