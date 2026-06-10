@@ -87,12 +87,14 @@ class TabState:
 	signatures: dict[str, Any] = field(default_factory=dict)  # pr_id -> last state_signature
 	pending_confirm: tuple[str, str] | None = None  # (pr_id, action key) armed for confirm
 	seconds_until_refresh: int = 0
+	fetch_failed: bool = False  # last fetch raised; clears on next success
 
 
 class PRMenuApp(App):
 	CSS = """
 	Screen { layout: vertical; background: $surface; }
 	#statusbar { height: 3; border: round $success; padding: 0 1; }
+	#statusbar.error { border: round $warning; }
 	#statusbar-row { height: 1; }
 	#tabs { height: 2fr; }
 	#tabs > ContentTabs { margin-top: 1; }
@@ -368,8 +370,10 @@ class PRMenuApp(App):
 			prs = self._tabs[i].config.fetch()
 		except Exception as e:
 			self.call_from_thread(self._mark_loading, i, False)
+			self.call_from_thread(self._mark_fetch_failed, i, True)
 			self.call_from_thread(self._set_breadcrumb, f"fetch failed: {e}", i)
 			return
+		self.call_from_thread(self._mark_fetch_failed, i, False)
 		self.call_from_thread(self._apply_prs, i, prs)
 
 	def _mark_loading(self, i: int, loading: bool) -> None:
@@ -379,6 +383,16 @@ class PRMenuApp(App):
 			self._loading_tabs.discard(i)
 		if i == self._active_index():
 			self._render_countdown()
+
+	def _mark_fetch_failed(self, i: int, failed: bool) -> None:
+		self._tabs[i].fetch_failed = failed
+		if i == self._active_index():
+			self._render_statusbar()
+
+	def _render_statusbar(self) -> None:
+		# Orange border on the active tab's status area while its last fetch failed.
+		ts = self._tabs[self._active_index()]
+		self.query_one("#statusbar").set_class(ts.fetch_failed, "error")
 
 	def _reset_countdown(self, i: int) -> None:
 		self._tabs[i].seconds_until_refresh = self._poll_seconds
@@ -544,6 +558,7 @@ class PRMenuApp(App):
 		else:
 			self._update_status("")
 		self._render_countdown()
+		self._render_statusbar()
 		self._render_tab_labels()
 		self._render_hotkeys()
 		self._set_breadcrumb("")
