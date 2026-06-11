@@ -59,6 +59,8 @@ def fetch_diff(pr):
 
 
 def review_label(pr):
+	if pr.get('isDraft'):
+		return '📝 Draft'
 	return REVIEW_STATE[review_state(pr)][0]
 
 
@@ -73,6 +75,7 @@ NODE_SELECTION = """
           updatedAt
           body
           state
+          isDraft
           latestOpinionatedReviews(last: 20) {
             nodes {
               state
@@ -100,6 +103,7 @@ JQ_PROJECTION = """
    url: .url,
    number: .number,
    state: .state,
+   isDraft: .isDraft,
    reviews: [.latestOpinionatedReviews.nodes[].state],
    repository: { nameWithOwner: .repository.nameWithOwner, name: .repository.name },
    createdAt: .createdAt,
@@ -167,5 +171,5 @@ TAB = TabConfig(
 	pr_label=lambda pr: pr['title'],
 	idle_label=review_label,
 	diff_fetch=fetch_diff,
-	state_signature=lambda pr: (pr['checkStatus'], review_state(pr)),
+	state_signature=lambda pr: (pr['checkStatus'], review_state(pr), pr.get('isDraft')),
 )
