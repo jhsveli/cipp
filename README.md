@@ -4,13 +4,14 @@
 
 A Textual TUI for skimming, approving, and merging GitHub PRs from the terminal.
 
-Two tabs:
+Three tabs:
 
-- **Production** — image-updater PRs in the configrepo awaiting your review (filtered to mentions, dependabot, and SUCCESS checks). Enter approves and merges.
+
+- **Created** — your own open PRs. `m` merges, `o` opens in browser, `c` copies the PR URL to the clipboard, `p` posts the PR to Slack to notify the team (only when Slack is configured, see below).
 - **Reviews** — PRs across GitHub where you're a requested reviewer, excluding image-updater. `a` approves, `m` approves and merges, `o` opens in browser.
-- **My PRs** — your own open PRs. `m` merges, `o` opens in browser, `c` copies the PR URL to the clipboard, `p` posts the PR to Slack to notify the team (only when Slack is configured, see below).
+- **Production** — image-updater PRs in the configrepo awaiting your review (filtered to mentions, dependabot, and SUCCESS checks). Enter approves and merges.
 
-## Slack
+## Slack 
 
 Set both env vars to enable the `p` action on **My PRs**, which posts the highlighted PR as a link to a channel, on your behalf:
 
