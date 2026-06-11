@@ -23,6 +23,14 @@ The post appears as you (user token, not a bot). When either var is unset, the `
 
 `←/→` switches tabs. `q` / `esc` quits. The active tab's hotkey legend lives in the footer; the bottom pane previews the highlighted PR's body / status.
 
+## Update interval
+
+Tabs refresh every 30s by default. Override with `CIPP_UPDATE_INTERVAL` (seconds); a missing, non-numeric, or non-positive value falls back to 30.
+
+```bash
+export CIPP_UPDATE_INTERVAL=10
+```
+
 ## Install
 
 Requires `gh` CLI installed and authenticated, and Python 3.10+.
