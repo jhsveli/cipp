@@ -462,7 +462,14 @@ class PRMenuApp(App):
 		old_ids = {pr["id"] for pr in ts.prs}
 		new_ids = {pr["id"] for pr in visible}
 
-		if old_ids == new_ids and ts.prs:
+		# Cheap in-place path only when the set AND the order are unchanged: it
+		# updates cells by pr_id without reordering the table's rows, so if
+		# post_process re-sorted (e.g. Created tab re-sorts on review state), the
+		# table's visual order would diverge from ts.prs — and every cursor→PR
+		# lookup (actions included) maps cursor_row to ts.prs[cursor_row]. On a
+		# reorder, fall through to the rebuild, which re-syncs both.
+		same_order = [pr["id"] for pr in ts.prs] == [pr["id"] for pr in visible]
+		if old_ids == new_ids and ts.prs and same_order:
 			# A changed state_signature means the basis for an armed confirm moved
 			# under it — disarm. (_detect_updates is active-tab-gated, so check raw.)
 			sig = ts.config.state_signature
