@@ -18,6 +18,11 @@ def post_process(prs):
 	return prs
 
 
+# A failed status-check rollup blocks merging (hard block, not a confirm).
+def build_failing(pr) -> bool:
+	return pr.get('checkStatus') in ('FAILURE', 'ERROR')
+
+
 def approve(pr):
 	exec(['gh', 'pr', 'review', '--approve', str(pr['number']), '-R', pr['repository']['nameWithOwner']])
 	return ActionResult.REMOVE
@@ -105,6 +110,7 @@ TAB = TabConfig(
 			key="m",
 			label="Approve + merge",
 			handler=approve_and_merge,
+			block=lambda pr: "Build failing — cannot merge" if build_failing(pr) else None,
 			safeguard=Safeguard(
 				when=lambda pr: pr["checkStatus"] != "SUCCESS",
 				descriptor="non-green",

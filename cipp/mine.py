@@ -21,6 +21,11 @@ REVIEW_STATE = {
 }
 
 
+# A failed status-check rollup blocks merging (hard block, not a confirm).
+def build_failing(pr) -> bool:
+	return pr.get('checkStatus') in ('FAILURE', 'ERROR')
+
+
 def review_state(pr) -> str:
 	states = pr.get('reviews') or []
 	if 'CHANGES_REQUESTED' in states:
@@ -126,6 +131,7 @@ TAB = TabConfig(
 			key="m",
 			label="Merge",
 			handler=merge,
+			block=lambda pr: "Build failing — cannot merge" if build_failing(pr) else None,
 			safeguard=Safeguard(
 				when=lambda pr: review_state(pr) != 'APPROVED',
 				descriptor="unapproved",

@@ -35,6 +35,11 @@ class ActionSpec:
 	# the Acting spinner / Finishing ✓ in the PR-status column. For instant ops
 	# like copy-to-clipboard where a per-row indicator is noise.
 	breadcrumb: Callable[[dict], str] | None = None
+	# Hard block: returns a reason string to refuse the action on this PR (shown
+	# as a breadcrumb), or None to allow it. Unlike a Safeguard (which a second
+	# keypress confirms past), a block cannot be overridden — e.g. merging a PR
+	# whose build is failing.
+	block: Callable[[dict], str | None] | None = None
 
 
 def format_age(created_at: str) -> str:
@@ -937,6 +942,13 @@ class PRMenuApp(App):
 		pr_id = pr["id"]
 		if pr_id in ts.acting_pr_ids or pr_id in ts.finishing_pr_ids:
 			return
+		# A hard block refuses the action outright — no arm/confirm path.
+		if spec.block is not None:
+			reason = spec.block(pr)
+			if reason is not None:
+				self._disarm_confirm(i)
+				self._flash_breadcrumb(i, f"🚫 {reason}", variant="warn")
+				return
 		was_confirmed = False
 		if spec.safeguard and spec.safeguard.when(pr):
 			armed = ts.pending_confirm == (pr_id, key)
