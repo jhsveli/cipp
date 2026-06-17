@@ -25,6 +25,10 @@ The *Reviews* and *Production* tabs are not disjoint by construction — *Review
 ### Action
 A keystroke-bound operation on a single PR — *Approve*, *Approve + merge*, *Open in browser*. Modeled by `ActionSpec`. Returns `ActionResult.REMOVE` (the PR should leave the list) or `ActionResult.KEEP` (the PR stays).
 
+A failing handler keeps the row + shows the error in the [[App status]] breadcrumb (`_on_action_error`). This rides on `cmd.exec` raising on non-zero exit (`check=True`, default): a failed shell-out (e.g. `gh pr merge`) used to return `""` and look like success, so the handler returned `REMOVE` and the row vanished while nothing happened on GitHub. Callers that legitimately exit non-zero pass `check=False` (e.g. `git config --get` for an unset key in `prod.py`).
+
+*Merge* / *Approve + merge* go through `cmd.merge_pr(repo, number)`: it tries a **rebase** merge (`-r`), falling back to **squash** (`-s`) if the repo disallows rebase. Repos vary in permitted methods (some allow only rebase, others only squash), so trying-then-falling-back covers both without an extra capabilities query.
+
 An action with `ActionSpec.breadcrumb` set (a `pr -> str`) is a *breadcrumb action*: it skips the [[PR-status]] column entirely (no [[Acting]] spinner / [[Finishing]] ✓) and instead flashes its message in the [[App status]] breadcrumb, auto-fading after 3s. For instant ops where a per-row indicator is noise — e.g. *My PRs* `c` Copy URL and `o` Open in browser. The fade is token-guarded (`_breadcrumb_token`) so a newer breadcrumb is never wiped by an older flash's timer.
 
 ### PR-status

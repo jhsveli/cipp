@@ -1,5 +1,5 @@
 from .abbreviate import short_repo
-from .cmd import exec
+from .cmd import exec, merge_pr
 from .extract_author import resolve_author
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
@@ -26,7 +26,7 @@ def approve(pr):
 def approve_and_merge(pr):
 	repo = pr['repository']['nameWithOwner']
 	exec(['gh', 'pr', 'review', '--approve', str(pr['number']), '-R', repo])
-	exec(['gh', 'pr', 'merge', '-s', '-R', repo, str(pr['number'])])
+	merge_pr(repo, pr['number'])
 	return ActionResult.REMOVE
 
 

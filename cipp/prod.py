@@ -1,5 +1,5 @@
 from .abbreviate import short_repo
-from .cmd import exec, exec_json
+from .cmd import exec, exec_json, merge_pr
 from .extract_author import extract_authors
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
@@ -9,7 +9,9 @@ AUTHOR = "aws-plattform-image-updater"
 # Sometimes, if git config name differs from github user full name,
 # The PRs can be tagged with either names, must check for both.
 # eg Jorgen Tu Sveli and Jørgen Tu Sveli
-config_name = exec(['git', 'config', '--global', '--get', 'user.name']).strip()
+# check=False: the key may be unset (git exits 1), which is fine — we fall back
+# to the gh identity below.
+config_name = exec(['git', 'config', '--global', '--get', 'user.name'], check=False).strip()
 
 # My identities, resolved once at load: local git name + the gh-authenticated
 # login and full name. Used to tell my own image-update PRs from teammates'.
@@ -56,7 +58,7 @@ def post_process(slice):
 
 def approve_and_merge(pr):
 	exec(['gh', 'pr', 'review', '--approve', str(pr['number']), '-R', REPO])
-	exec(['gh', 'pr', 'merge', '-s', '-R', REPO, str(pr['number'])])
+	merge_pr(REPO, pr['number'])
 	return ActionResult.REMOVE
 
 

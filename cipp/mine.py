@@ -1,6 +1,6 @@
 from . import slack
 from .abbreviate import short_repo
-from .cmd import exec, exec_input
+from .cmd import exec, exec_input, merge_pr
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
 CHECK_EMOJI = {
@@ -35,7 +35,7 @@ def post_process(prs):
 
 
 def merge(pr):
-	exec(['gh', 'pr', 'merge', '-s', '-R', pr['repository']['nameWithOwner'], str(pr['number'])])
+	merge_pr(pr['repository']['nameWithOwner'], pr['number'])
 	return ActionResult.REMOVE
 
 
