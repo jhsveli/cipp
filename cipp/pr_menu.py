@@ -100,6 +100,7 @@ class TabState:
 	removed_ids: set[str] = field(default_factory=set)
 	acting_pr_ids: dict[str, str] = field(default_factory=dict)
 	finishing_pr_ids: set[str] = field(default_factory=set)
+	failed_pr_ids: dict[str, str] = field(default_factory=dict)  # pr_id -> action label that failed
 	unseen_pr_ids: set[str] = field(default_factory=set)
 	has_updates: bool = False
 	signatures: dict[str, Any] = field(default_factory=dict)  # pr_id -> last state_signature
@@ -319,6 +320,9 @@ class PRMenuApp(App):
 			content = f"{self.SPINNER_FRAMES[self._spinner_frame]} {label}"
 		elif pr_id in ts.finishing_pr_ids:
 			content = "✓ Done"
+		elif pr_id in ts.failed_pr_ids:
+			content = f"✗ {ts.failed_pr_ids[pr_id]} failed"
+			return Text(content, style="dim red" if dim else "red", justify="right")
 		else:
 			pr = next((p for p in ts.prs if p["id"] == pr_id), None)
 			content = ts.config.idle_label(pr) if pr else ""
@@ -466,6 +470,8 @@ class PRMenuApp(App):
 		visible = [pr for pr in prs if pr["id"] not in ts.removed_ids]
 		old_ids = {pr["id"] for pr in ts.prs}
 		new_ids = {pr["id"] for pr in visible}
+		# A fetch is fresh truth from GitHub, so any prior failure marker is stale.
+		ts.failed_pr_ids.clear()
 
 		# Cheap in-place path only when the set AND the order are unchanged: it
 		# updates cells by pr_id without reordering the table's rows, so if
@@ -967,6 +973,7 @@ class PRMenuApp(App):
 		self._flash_action(i, key)
 		# Breadcrumb actions skip the PR-status spinner entirely; the row never
 		# enters Acting/Finishing, feedback lives only in the App status bar.
+		ts.failed_pr_ids.pop(pr_id, None)  # a retry clears any prior failure marker
 		if spec.breadcrumb is None:
 			ts.acting_pr_ids[pr_id] = spec.label
 			self._refresh_row(i, pr_id)
@@ -981,7 +988,7 @@ class PRMenuApp(App):
 		try:
 			result = spec.handler(pr)
 		except Exception as e:
-			self.call_from_thread(self._on_action_error, i, pr, e)
+			self.call_from_thread(self._on_action_error, i, spec, pr, e)
 			return
 		self.call_from_thread(self._on_action_done, i, pr, spec, result)
 
@@ -1030,10 +1037,14 @@ class PRMenuApp(App):
 			self._update_status("")
 		self._render_tab_labels()
 
-	def _on_action_error(self, i: int, pr: dict, error: Exception) -> None:
+	def _on_action_error(self, i: int, spec: ActionSpec, pr: dict, error: Exception) -> None:
 		ts = self._tabs[i]
 		pr_id = pr["id"]
 		ts.acting_pr_ids.pop(pr_id, None)
+		# Persist a failure marker in the PR-status column (the breadcrumb is
+		# transient). It clears when the action is retried (see _run_action_on_tab)
+		# or when a fetch rebuilds/refreshes the PR set (see _apply_prs).
+		ts.failed_pr_ids[pr_id] = spec.label
 		self._refresh_row(i, pr_id)
 		self._set_breadcrumb(f"#{pr['number']} failed: {error}", i)
 

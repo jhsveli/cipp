@@ -25,7 +25,7 @@ The *Reviews* and *Production* tabs are not disjoint by construction — *Review
 ### Action
 A keystroke-bound operation on a single PR — *Approve*, *Approve + merge*, *Open in browser*. Modeled by `ActionSpec`. Returns `ActionResult.REMOVE` (the PR should leave the list) or `ActionResult.KEEP` (the PR stays).
 
-A failing handler keeps the row + shows the error in the [[App status]] breadcrumb (`_on_action_error`). This rides on `cmd.exec` raising on non-zero exit (`check=True`, default): a failed shell-out (e.g. `gh pr merge`) used to return `""` and look like success, so the handler returned `REMOVE` and the row vanished while nothing happened on GitHub. Callers that legitimately exit non-zero pass `check=False` (e.g. `git config --get` for an unset key in `prod.py`).
+A failing handler keeps the row in a [[Failed]] state + shows the error in the [[App status]] breadcrumb (`_on_action_error`). This rides on `cmd.exec` raising on non-zero exit (`check=True`, default): a failed shell-out (e.g. `gh pr merge`) used to return `""` and look like success, so the handler returned `REMOVE` and the row vanished while nothing happened on GitHub. Callers that legitimately exit non-zero pass `check=False` (e.g. `git config --get` for an unset key in `prod.py`).
 
 *Merge* / *Approve + merge* go through `cmd.merge_pr(repo, number)`: it tries a **rebase** merge (`-r`), falling back to **squash** (`-s`) if the repo disallows rebase. Repos vary in permitted methods (some allow only rebase, others only squash), so trying-then-falling-back covers both without an extra capabilities query.
 
@@ -56,6 +56,9 @@ The action key is rejected on a row that is already acting; this is the row-leve
 
 ### Finishing
 A row's state immediately after an [[Acting]] action that returned `REMOVE` succeeded. Visualised as `✓ Done` in the [[PR-status]] column for 2 seconds, then the cell dims briefly, then the row is removed from the table. Tracked by `TabState.finishing_pr_ids`. Action keys remain locked while finishing.
+
+### Failed
+A row's state after an [[Acting]] action's handler raised (e.g. `gh pr merge`/`approve` exited non-zero — see [[Action]]). The PR **stays** in the list (it was never removed) and the [[PR-status]] column shows a red `✗ {label} failed`, persisting (unlike the transient breadcrumb). Tracked by `TabState.failed_pr_ids` (pr_id -> failed action label). Cleared on retry (pressing the action again on that row) or on any fetch (`_apply_prs` treats a fetch as fresh truth and clears all markers). Distinct from [[Finishing]], which is the *success* path.
 
 ### Unseen
 A PR that arrived in a [[Tab]]'s list from a fetch *after* the initial load and has not yet been looked at. Visualised by a `●` marker prefixing the **first column** (Age / checks). A row clears its marker the moment its row is highlighted (or the cursor lands on it after a rebuild / tab activation). Tracked by `TabState.unseen_pr_ids`. The initial load never marks PRs unseen.
