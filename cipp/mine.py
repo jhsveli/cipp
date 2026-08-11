@@ -63,10 +63,29 @@ def fetch_diff(pr):
 	return exec(['gh', 'pr', 'diff', str(pr['number']), '-R', pr['repository']['nameWithOwner']])
 
 
+# Merging needs a confirm when the PR is unapproved *or* carries discussion —
+# comments can hold objections that no review state reflects (an approval can
+# predate them), so an approved-but-commented-on PR is gated too.
+def merge_needs_confirm(pr) -> bool:
+	return review_state(pr) != 'APPROVED' or bool(pr.get('commentCount'))
+
+
+def merge_descriptor(pr) -> str:
+	unapproved = review_state(pr) != 'APPROVED'
+	if unapproved and pr.get('commentCount'):
+		return 'unapproved, commented-on'
+	return 'unapproved' if unapproved else 'commented-on'
+
+
 def review_label(pr):
 	if pr.get('isDraft'):
 		return '📝 Draft'
-	return REVIEW_STATE[review_state(pr)][0]
+	state = review_state(pr)
+	# A talky bubble stands in for "⌛ Awaiting review" once there's discussion:
+	# the bubble itself implies the PR is still waiting for approval.
+	if state == 'AWAITING' and pr.get('commentCount'):
+		return f"💬 {pr['commentCount']}"
+	return REVIEW_STATE[state][0]
 
 
 SEARCH_QUERY = "type:pr state:open author:@me sort:created-desc"
@@ -81,6 +100,8 @@ NODE_SELECTION = """
           body
           state
           isDraft
+          comments { totalCount }
+          reviewThreads { totalCount }
           latestOpinionatedReviews(last: 20) {
             nodes {
               state
@@ -109,6 +130,7 @@ JQ_PROJECTION = """
    number: .number,
    state: .state,
    isDraft: .isDraft,
+   commentCount: (.comments.totalCount + .reviewThreads.totalCount),
    reviews: [.latestOpinionatedReviews.nodes[].state],
    repository: { nameWithOwner: .repository.nameWithOwner, name: .repository.name },
    createdAt: .createdAt,
@@ -133,8 +155,8 @@ TAB = TabConfig(
 			handler=merge,
 			block=lambda pr: "Build failing — cannot merge" if build_failing(pr) else None,
 			safeguard=Safeguard(
-				when=lambda pr: review_state(pr) != 'APPROVED',
-				descriptor="unapproved",
+				when=merge_needs_confirm,
+				descriptor=merge_descriptor,
 			),
 		),
 		ActionSpec(
@@ -177,5 +199,5 @@ TAB = TabConfig(
 	pr_label=lambda pr: pr['title'],
 	idle_label=review_label,
 	diff_fetch=fetch_diff,
-	state_signature=lambda pr: (pr['checkStatus'], review_state(pr), pr.get('isDraft')),
+	state_signature=lambda pr: (pr['checkStatus'], review_state(pr), pr.get('isDraft'), pr.get('commentCount')),
 )

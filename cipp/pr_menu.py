@@ -22,7 +22,12 @@ class ActionResult(Enum):
 @dataclass
 class Safeguard:
 	when: Callable[[dict], bool]  # True => the action on this PR needs confirmation
-	descriptor: str = "unsafe"  # fills "Really {label} {descriptor} PR?"
+	# Fills "Really {label} {descriptor} PR?". A callable when the reason the PR is
+	# unsafe varies per PR (e.g. unapproved vs. commented-on vs. both).
+	descriptor: str | Callable[[dict], str] = "unsafe"
+
+	def describe(self, pr: dict) -> str:
+		return self.descriptor(pr) if callable(self.descriptor) else self.descriptor
 
 
 @dataclass
@@ -961,7 +966,7 @@ class PRMenuApp(App):
 			if not armed:
 				self._arm_confirm(
 					i, pr_id, key,
-					f"⚠️  Really {spec.label} {spec.safeguard.descriptor} PR? Press {key} to confirm!",
+					f"⚠️  Really {spec.label} {spec.safeguard.describe(pr)} PR? Press {key} to confirm!",
 				)
 				return
 			was_confirmed = True
