@@ -92,6 +92,16 @@ def author_label(pr):
 
 SEARCH_QUERY = "type:pr state:open repo:sparebank1utvikling/app-configrepo-sb1u prod in:title review-requested:@me sort:created-desc"
 
+# GitHub's search API has no OR/grouping operator, so this runs as a second
+# search() block (merged in JQ_PROJECTION below) rather than one query string.
+# It catches PRs I already approved whose merge failed (e.g. the "base branch
+# was modified" race) — review-requested:@me alone drops a PR from the search
+# results the moment the review is submitted, so it'd otherwise vanish from
+# the tab with the merge still not done.
+EXTRA_SEARCH = {
+	"prod_reviewed": "type:pr state:open repo:sparebank1utvikling/app-configrepo-sb1u prod in:title reviewed-by:@me sort:created-desc",
+}
+
 NODE_SELECTION = """
 			  url
 			  id
@@ -126,7 +136,7 @@ JQ_PROJECTION = """
 		login: .data.viewer.login,
 		name: .data.viewer.name
 	},
-	prs: [.data.prod.edges[].node | {
+	prs: [(.data.prod.edges + .data.prod_reviewed.edges) | unique_by(.node.id)[] | .node | {
 	   id: .id,
 	   number: .number,
 	   state: .state,
@@ -145,6 +155,7 @@ TAB = TabConfig(
 	title="Pick an image update in prod for approval",
 	alias="prod",
 	search_query=SEARCH_QUERY,
+	extra_search=EXTRA_SEARCH,
 	node_selection=NODE_SELECTION,
 	jq_projection=JQ_PROJECTION,
 	post_process=post_process,

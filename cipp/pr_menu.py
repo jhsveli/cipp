@@ -86,6 +86,11 @@ class TabConfig:
 	jq_projection: str
 	post_process: Callable[[Any], list[dict]]
 	actions: list[ActionSpec]
+	# Extra aliased search() blocks, merged by this tab's own jq_projection
+	# (which reads .data.<alias> directly). GitHub's search API has no OR or
+	# grouping operator, so "matches query A or query B" needs two separate
+	# search() calls unioned client-side rather than one query string.
+	extra_search: dict[str, str] = field(default_factory=dict)
 	status_bar: Callable[[dict], str] = lambda pr: ""
 	columns: list[ColumnSpec] = field(default_factory=list)
 	pr_label: Callable[[dict], str] = lambda pr: f"{pr['number']:>6} {pr['title']}"
@@ -382,13 +387,17 @@ class PRMenuApp(App):
 			self._render_hotkeys()
 
 	def _combined_query(self) -> str:
-		# One GraphQL doc: shared viewer + one aliased search() block per tab.
-		blocks = [
-			f"""  {ts.config.alias}: search(query: "{ts.config.search_query}", type: ISSUE, first: 100) {{
+		# One GraphQL doc: shared viewer + one aliased search() block per tab,
+		# plus any extra_search blocks a tab needs (see TabConfig.extra_search).
+		blocks = []
+		for ts in self._tabs:
+			blocks.append(f"""  {ts.config.alias}: search(query: "{ts.config.search_query}", type: ISSUE, first: 100) {{
     edges {{ node {{ ... on PullRequest {{ {ts.config.node_selection} }} }} }}
-  }}"""
-			for ts in self._tabs
-		]
+  }}""")
+			for alias, query in ts.config.extra_search.items():
+				blocks.append(f"""  {alias}: search(query: "{query}", type: ISSUE, first: 100) {{
+    edges {{ node {{ ... on PullRequest {{ {ts.config.node_selection} }} }} }}
+  }}""")
 		return "{\n  viewer { login name }\n" + "\n".join(blocks) + "\n}"
 
 	def _combined_jq(self) -> str:
