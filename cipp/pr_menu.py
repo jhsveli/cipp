@@ -119,6 +119,12 @@ class TabConfig:
 	fetch: Callable[[Callable[[str], None]], list[dict]] | None = None
 	poll_seconds: int | None = None
 	noun: str = "PR"  # row noun in the App status count, e.g. "app"
+	# Column headers; `status_label` heads the right-hand status/idle column.
+	show_header: bool = False
+	status_label: str = "Status"
+	# Bottom pane title (non-diff) and table:preview height ratio (fr).
+	preview_title: str = "Preview | Body"
+	pane_ratio: tuple[int, int] = (2, 3)
 
 
 @dataclass
@@ -229,7 +235,7 @@ class PRMenuApp(App):
 				with TabPane(ts.config.name, id=f"tab-{i}"):
 					yield DataTable(
 						id=ts.table_id,
-						show_header=False,
+						show_header=ts.config.show_header,
 						cursor_type="row",
 						zebra_stripes=False,
 					)
@@ -251,14 +257,15 @@ class PRMenuApp(App):
 
 	def on_mount(self) -> None:
 		self.title = self._tabs[self._initial_tab].config.title
+		self._apply_layout(self._tabs[self._initial_tab].config)
 		for ts in self._tabs:
 			table = self.query_one(f"#{ts.table_id}", DataTable)
 			for j, col in enumerate(ts.config.columns):
 				# First column carries the unseen "● " marker, so reserve 2 extra cells.
 				width = col.width + 2 if j == 0 and col.width is not None else col.width
 				table.add_column(col.label, key=col.key, width=width)
-			table.add_column("PR", key="pr", width=10)
-			table.add_column("Status", key="status", width=20)
+			table.add_column(ts.config.noun.capitalize(), key="pr", width=10)
+			table.add_column(ts.config.status_label, key="status", width=20)
 		self._refresh_all()
 		for i, ts in enumerate(self._tabs):
 			if ts.config.fetch is not None:
@@ -722,6 +729,7 @@ class PRMenuApp(App):
 		i = self._active_index()
 		ts = self._tabs[i]
 		self.title = ts.config.title
+		self._apply_layout(ts.config)
 		ts.has_updates = False
 		# Disarm any armed confirm (could be on the tab we just left).
 		for j in range(len(self._tabs)):
@@ -755,10 +763,18 @@ class PRMenuApp(App):
 	def _update_status(self, text: str) -> None:
 		self.query_one("#status-md", Markdown).update(text)
 
+	def _apply_layout(self, config: TabConfig) -> None:
+		self.query_one("#tabs").styles.height = f"{config.pane_ratio[0]}fr"
+		status = self.query_one("#status")
+		status.styles.height = f"{config.pane_ratio[1]}fr"
+		if not status.has_class("diff-mode"):
+			status.border_title = config.preview_title
+
 	def _show_diff_mode(self, on: bool) -> None:
 		status = self.query_one("#status")
 		status.set_class(on, "diff-mode")
-		status.border_title = "Preview | Diff" if on else "Preview | Body"
+		preview_title = self._tabs[self._active_index()].config.preview_title
+		status.border_title = "Preview | Diff" if on else preview_title
 
 	def _render_diff_text(self, diff: str) -> Text:
 		text = Text()
