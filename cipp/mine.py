@@ -26,6 +26,19 @@ def build_failing(pr) -> bool:
 	return pr.get('checkStatus') in ('FAILURE', 'ERROR')
 
 
+# GitHub computes mergeability lazily: UNKNOWN until done (next poll resolves it).
+def has_conflicts(pr) -> bool:
+	return pr.get('mergeable') == 'CONFLICTING'
+
+
+def merge_block(pr) -> str | None:
+	if has_conflicts(pr):
+		return "Conflicts with base branch — cannot merge"
+	if build_failing(pr):
+		return "Build failing — cannot merge"
+	return None
+
+
 def review_state(pr) -> str:
 	states = pr.get('reviews') or []
 	if 'CHANGES_REQUESTED' in states:
@@ -78,6 +91,10 @@ def merge_descriptor(pr) -> str:
 
 
 def review_label(pr):
+	# Conflicts trump all (need action before anything else); comment count kept.
+	if has_conflicts(pr):
+		comments = f" 💬 {pr['commentCount']}" if pr.get('commentCount') else ""
+		return f"💥 Conflicts{comments}"
 	if pr.get('isDraft'):
 		return '📝 Draft'
 	state = review_state(pr)
@@ -100,6 +117,7 @@ NODE_SELECTION = """
           body
           state
           isDraft
+          mergeable
           comments { totalCount }
           reviewThreads { totalCount }
           latestOpinionatedReviews(last: 20) {
@@ -130,6 +148,7 @@ JQ_PROJECTION = """
    number: .number,
    state: .state,
    isDraft: .isDraft,
+   mergeable: .mergeable,
    commentCount: (.comments.totalCount + .reviewThreads.totalCount),
    reviews: [.latestOpinionatedReviews.nodes[].state],
    repository: { nameWithOwner: .repository.nameWithOwner, name: .repository.name },
@@ -153,7 +172,7 @@ TAB = TabConfig(
 			key="m",
 			label="Merge",
 			handler=merge,
-			block=lambda pr: "Build failing — cannot merge" if build_failing(pr) else None,
+			block=merge_block,
 			safeguard=Safeguard(
 				when=merge_needs_confirm,
 				descriptor=merge_descriptor,
@@ -199,5 +218,5 @@ TAB = TabConfig(
 	pr_label=lambda pr: pr['title'],
 	idle_label=review_label,
 	diff_fetch=fetch_diff,
-	state_signature=lambda pr: (pr['checkStatus'], review_state(pr), pr.get('isDraft'), pr.get('commentCount')),
+	state_signature=lambda pr: (pr['checkStatus'], review_state(pr), pr.get('isDraft'), pr.get('commentCount'), has_conflicts(pr)),
 )
