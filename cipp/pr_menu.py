@@ -12,6 +12,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import DataTable, Header, Markdown, Static, TabbedContent, TabPane
 
 from .cmd import exec_json
+from .update import Updater
 
 
 class ActionResult(Enum):
@@ -147,6 +148,9 @@ class TabState:
 	fetch_failed: bool = False
 
 
+RESTART = "restart"
+
+
 class PRMenuApp(App):
 	CSS = """
 	Screen { layout: vertical; background: $surface; layers: base overlay; }
@@ -167,6 +171,8 @@ class PRMenuApp(App):
 	#breadcrumb.warn { color: $warning; }
 	#breadcrumb.confirmed { color: $success; }
 	#update { width: auto; padding: 0 1; color: $warning; }
+	#update.running { color: $success; }
+	#update.error { color: $error; }
 	.hotkeys { height: 1; padding: 0 1; color: $text; }
 	Tab.updated { color: white; text-style: not bold; }
 	DataTable { height: 1fr; background: $surface; }
@@ -182,6 +188,7 @@ class PRMenuApp(App):
 		Binding("left", "previous_tab", "Prev tab", priority=True),
 		Binding("right", "next_tab", "Next tab", priority=True),
 		Binding("d", "toggle_diff", "Toggle diff", priority=True),
+		Binding("u", "self_update", "Update", show=False),
 		Binding("shift+up", "preview_scroll_up", "Preview ↑", priority=True),
 		Binding("shift+down", "preview_scroll_down", "Preview ↓", priority=True),
 		Binding("shift+pageup", "preview_page_up", "Preview ⇞", priority=True),
@@ -203,15 +210,19 @@ class PRMenuApp(App):
 		tabs: list[TabConfig],
 		poll_seconds: int,
 		initial_tab: int,
-		update_check: Callable[[], str] | None = None,
-		update_check_seconds: int = 60,
+		updater: Updater | None = None,
+		version: str = "",
 	):
 		super().__init__()
 		self._poll_seconds = poll_seconds
-		# Blocking `() -> label` ("" = up to date), run off-thread every
-		# `update_check_seconds`; the label stays in the status bar until cleared.
-		self._update_check = update_check
-		self._update_check_seconds = update_check_seconds
+		# Update check runs off-thread every `updater.seconds`; the label stays in
+		# the status bar while main is ahead. `u` self-updates when `updater.apply`
+		# is set, then exits with RESTART (caller re-execs).
+		self._updater = updater
+		self._version = version
+		self._commits_behind = 0
+		self._updating = False
+		self._update_failed = False
 		self._initial_tab = initial_tab
 		# One combined fetch drives all tabs, so loading / countdown / failure
 		# state is app-level rather than per-tab.
@@ -265,6 +276,7 @@ class PRMenuApp(App):
 
 	def on_mount(self) -> None:
 		self.title = self._tabs[self._initial_tab].config.title
+		self.sub_title = self._version
 		self._apply_layout(self._tabs[self._initial_tab].config)
 		for ts in self._tabs:
 			table = self.query_one(f"#{ts.table_id}", DataTable)
@@ -280,21 +292,74 @@ class PRMenuApp(App):
 				self._refresh_standalone(i)
 		self.set_interval(1, self._tick_countdown)
 		self.set_interval(0.1, self._tick_spinner)
-		if self._update_check is not None:
+		if self._updater is not None:
 			self._run_update_check()
-			self.set_interval(self._update_check_seconds, self._run_update_check)
+			self.set_interval(self._updater.seconds, self._run_update_check)
 		self._render_countdown()
 		self._render_hotkeys()
 		self._render_tab_labels()
 
 	def _run_update_check(self) -> None:
-		check = self._update_check
-		self.run_worker(
-			lambda: self.call_from_thread(self.query_one("#update", Static).update, check()),
-			thread=True,
-			exclusive=True,
-			group="update-check",
-		)
+		check = self._updater.check
+
+		def work() -> None:
+			try:
+				n = check()
+			except Exception:
+				n = 0
+			self.call_from_thread(self._on_update_checked, n)
+
+		self.run_worker(work, thread=True, exclusive=True, group="update-check")
+
+	def _on_update_checked(self, n: int) -> None:
+		self._commits_behind = n
+		self._render_update()
+
+	def _render_update(self) -> None:
+		label = self.query_one("#update", Static)
+		label.set_class(self._updating, "running")
+		label.set_class(self._update_failed, "error")
+		n = self._commits_behind
+		if self._updating:
+			text = "⬆ Updating…"
+		elif n <= 0:
+			text = ""
+		elif self._updater.apply is None:
+			text = f"⬆ {n} new commit(s) — {self._updater.hint}"
+		elif self._update_failed:
+			text = "⬆ Update failed — u to retry"
+		else:
+			text = f"⬆ {n} new commit(s) — u to update"
+		label.update(text)
+
+	def action_self_update(self) -> None:
+		u = self._updater
+		if u is None or u.apply is None or self._commits_behind <= 0 or self._updating:
+			return
+		# Restart would kill an in-flight merge/approve mid-call.
+		if any(ts.acting_pr_ids or ts.finishing_pr_ids for ts in self._tabs):
+			self._flash_breadcrumb(self._active_index(), "Wait for running actions to finish", variant="warn")
+			return
+		self._updating = True
+		self._update_failed = False
+		self._render_update()
+		apply = u.apply
+
+		def work() -> None:
+			try:
+				apply()
+			except Exception as e:
+				self.call_from_thread(self._on_update_failed, e)
+				return
+			self.call_from_thread(self.exit, (RESTART, self._active_index()))
+
+		self.run_worker(work, thread=True, exclusive=True, group="self-update")
+
+	def _on_update_failed(self, error: Exception) -> None:
+		self._updating = False
+		self._update_failed = True
+		self._render_update()
+		self._set_breadcrumb(f"Update failed: {error}", self._active_index())
 
 	def on_resize(self, event) -> None:
 		self._flex_pr_columns()
@@ -1235,7 +1300,8 @@ def run_pr_menu(
 	tabs: list[TabConfig],
 	poll_seconds: int = 30,
 	initial_tab: int = 0,
-	update_check: Callable[[], str] | None = None,
-	update_check_seconds: int = 60,
-) -> None:
-	PRMenuApp(tabs, poll_seconds, initial_tab, update_check, update_check_seconds).run()
+	updater: Updater | None = None,
+	version: str = "",
+):
+	# -> (RESTART, active tab index) after a self-update, else None.
+	return PRMenuApp(tabs, poll_seconds, initial_tab, updater, version).run()

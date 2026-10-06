@@ -1,10 +1,12 @@
 import argparse
 import os
+import sys
 
 from . import apps, mine, prod, prs, update
-from .pr_menu import run_pr_menu
+from .pr_menu import RESTART, run_pr_menu
 
 DEFAULT_UPDATE_INTERVAL = 30
+TAB_NAMES = ["mine", "reviews", "prod", "apps"]  # --tab values, in tab order
 
 
 def update_interval() -> int:
@@ -22,22 +24,27 @@ def update_interval() -> int:
 
 def main():
 	parser = argparse.ArgumentParser(prog="cipp")
-	parser.add_argument("--tab", choices=["prod", "reviews", "mine", "apps"], default="prod")
+	parser.add_argument("--tab", choices=TAB_NAMES, default="prod")
 	args = parser.parse_args()
 	tabs = [mine.TAB, prs.TAB, prod.TAB]
 	# Apps tab needs shifterctl; without it the tab is hidden.
 	if apps.enabled():
 		tabs.append(apps.TAB)
-	initial_tab = {"mine": 0, "reviews": 1, "prod": 2, "apps": 3}[args.tab]
+	initial_tab = TAB_NAMES.index(args.tab)
 	if initial_tab >= len(tabs):
 		parser.error("--tab apps requires shifterctl on PATH")
-	run_pr_menu(
+	result = run_pr_menu(
 		tabs,
 		poll_seconds=update_interval(),
 		initial_tab=initial_tab,
-		update_check=update.checker(),
-		update_check_seconds=update.CHECK_SECONDS,
+		updater=update.updater(),
+		version=update.version(),
 	)
+	if isinstance(result, tuple) and result[0] == RESTART:
+		# Re-exec into the freshly installed code, back on the same tab (last
+		# --tab wins).
+		argv = [sys.executable, "-m", "cipp.menu", *sys.argv[1:], "--tab", TAB_NAMES[result[1]]]
+		os.execv(sys.executable, argv)
 
 
 if __name__ == "__main__":

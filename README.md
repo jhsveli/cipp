@@ -51,11 +51,13 @@ cipp --tab apps       # opens on Apps
 
 ## Update
 
+When `main` is ahead of the running install (checked every 60s), the status bar shows `⬆ N new commit(s) — u to update`. Press `u`: cipp runs `pipx upgrade cipp` and restarts on the same tab. Or by hand:
+
 ```bash
-pipx reinstall cipp
+pipx upgrade cipp
 ```
 
-(`pipx upgrade` is a no-op: version is static, so pip sees nothing newer.) The status bar shows `⬆ N new commit(s)` when `main` is ahead of the running install (checked every 60s).
+Installs from before versioning came from git (version `0.1.0`) need a one-off `pipx reinstall cipp`.
 
 ## Develop
 
