@@ -765,11 +765,16 @@ class PRMenuApp(App):
 	def _update_status(self, text: str) -> None:
 		self.query_one("#status-md", Markdown).update(text)
 
+	# Diff mode grows the preview pane (table:preview, fr).
+	DIFF_PANE_RATIO = (1, 4)
+
 	def _apply_layout(self, config: TabConfig) -> None:
-		self.query_one("#tabs").styles.height = f"{config.pane_ratio[0]}fr"
 		status = self.query_one("#status")
-		status.styles.height = f"{config.pane_ratio[1]}fr"
-		if not status.has_class("diff-mode"):
+		diff = status.has_class("diff-mode")
+		table_fr, status_fr = self.DIFF_PANE_RATIO if diff else config.pane_ratio
+		self.query_one("#tabs").styles.height = f"{table_fr}fr"
+		status.styles.height = f"{status_fr}fr"
+		if not diff:
 			status.border_title = config.preview_title
 
 	def _diff_shown(self) -> bool:
@@ -779,10 +784,11 @@ class PRMenuApp(App):
 		status = self.query_one("#status")
 		changed = status.has_class("diff-mode") != on
 		status.set_class(on, "diff-mode")
+		config = self._tabs[self._active_index()].config
 		if changed:
 			self._render_hotkeys()
-		preview_title = self._tabs[self._active_index()].config.preview_title
-		status.border_title = "Preview | Diff" if on else preview_title
+			self._apply_layout(config)
+		status.border_title = "Preview | Diff" if on else config.preview_title
 
 	def _render_diff_text(self, diff: str) -> Text:
 		text = Text()
