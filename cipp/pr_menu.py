@@ -438,6 +438,8 @@ class PRMenuApp(App):
 				parts.append(f"[reverse]{part}[/]" if a.key == flashed else part)
 			if ts.config.diff_fetch is not None:
 				parts.append(" [b]d[/b] Toggle diff ")
+			if i == self._active_index() and self._diff_shown():
+				parts.extend([" [b]⇧↑/↓[/b] Scroll ", " [b]⇧⇞/⇟[/b] Page ", " [b]⌥⇞/⇟[/b] Prev/next file "])
 			parts.extend([" [b]←/→[/b] Switch tab ", " [b]q[/b] Quit "])
 			self.query_one(f"#hotkeys-{i}", Static).update(" ".join(parts))
 
@@ -770,9 +772,15 @@ class PRMenuApp(App):
 		if not status.has_class("diff-mode"):
 			status.border_title = config.preview_title
 
+	def _diff_shown(self) -> bool:
+		return self.query_one("#status").has_class("diff-mode")
+
 	def _show_diff_mode(self, on: bool) -> None:
 		status = self.query_one("#status")
+		changed = status.has_class("diff-mode") != on
 		status.set_class(on, "diff-mode")
+		if changed:
+			self._render_hotkeys()
 		preview_title = self._tabs[self._active_index()].config.preview_title
 		status.border_title = "Preview | Diff" if on else preview_title
 
