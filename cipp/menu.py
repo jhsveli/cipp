@@ -1,7 +1,7 @@
 import argparse
 import os
 
-from . import apps, mine, prod, prs
+from . import apps, mine, prod, prs, update
 from .pr_menu import run_pr_menu
 
 DEFAULT_UPDATE_INTERVAL = 30
@@ -35,6 +35,8 @@ def main():
 		tabs,
 		poll_seconds=update_interval(),
 		initial_tab=initial_tab,
+		update_check=update.checker(),
+		update_check_seconds=update.CHECK_SECONDS,
 	)
 
 

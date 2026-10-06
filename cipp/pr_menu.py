@@ -166,6 +166,7 @@ class PRMenuApp(App):
 	#breadcrumb.running { color: $success; }
 	#breadcrumb.warn { color: $warning; }
 	#breadcrumb.confirmed { color: $success; }
+	#update { width: auto; padding: 0 1; color: $warning; }
 	.hotkeys { height: 1; padding: 0 1; color: $text; }
 	Tab.updated { color: white; text-style: not bold; }
 	DataTable { height: 1fr; background: $surface; }
@@ -202,9 +203,15 @@ class PRMenuApp(App):
 		tabs: list[TabConfig],
 		poll_seconds: int,
 		initial_tab: int,
+		update_check: Callable[[], str] | None = None,
+		update_check_seconds: int = 60,
 	):
 		super().__init__()
 		self._poll_seconds = poll_seconds
+		# Blocking `() -> label` ("" = up to date), run off-thread every
+		# `update_check_seconds`; the label stays in the status bar until cleared.
+		self._update_check = update_check
+		self._update_check_seconds = update_check_seconds
 		self._initial_tab = initial_tab
 		# One combined fetch drives all tabs, so loading / countdown / failure
 		# state is app-level rather than per-tab.
@@ -247,6 +254,7 @@ class PRMenuApp(App):
 			with Horizontal(id="statusbar-row"):
 				yield Static("", id="countdown")
 				yield Static("", id="breadcrumb")
+				yield Static("", id="update", markup=False)
 		status = VerticalScroll(
 			Markdown("", id="status-md"),
 			Static("", id="status-diff", markup=False),
@@ -272,9 +280,21 @@ class PRMenuApp(App):
 				self._refresh_standalone(i)
 		self.set_interval(1, self._tick_countdown)
 		self.set_interval(0.1, self._tick_spinner)
+		if self._update_check is not None:
+			self._run_update_check()
+			self.set_interval(self._update_check_seconds, self._run_update_check)
 		self._render_countdown()
 		self._render_hotkeys()
 		self._render_tab_labels()
+
+	def _run_update_check(self) -> None:
+		check = self._update_check
+		self.run_worker(
+			lambda: self.call_from_thread(self.query_one("#update", Static).update, check()),
+			thread=True,
+			exclusive=True,
+			group="update-check",
+		)
 
 	def on_resize(self, event) -> None:
 		self._flex_pr_columns()
@@ -1215,5 +1235,7 @@ def run_pr_menu(
 	tabs: list[TabConfig],
 	poll_seconds: int = 30,
 	initial_tab: int = 0,
+	update_check: Callable[[], str] | None = None,
+	update_check_seconds: int = 60,
 ) -> None:
-	PRMenuApp(tabs, poll_seconds, initial_tab).run()
+	PRMenuApp(tabs, poll_seconds, initial_tab, update_check, update_check_seconds).run()

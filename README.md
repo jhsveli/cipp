@@ -52,8 +52,10 @@ cipp --tab apps       # opens on Apps
 ## Update
 
 ```bash
-pipx upgrade cipp
+pipx reinstall cipp
 ```
+
+(`pipx upgrade` is a no-op: version is static, so pip sees nothing newer.) The status bar shows `⬆ N new commit(s)` when `main` is ahead of the running install (checked every 60s).
 
 ## Develop
 
