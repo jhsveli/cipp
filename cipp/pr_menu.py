@@ -17,6 +17,7 @@ from .cmd import exec_json
 class ActionResult(Enum):
 	REMOVE = "remove"
 	KEEP = "keep"
+	REFRESH = "refresh"  # tab-level: refetch the standalone tab now
 
 
 @dataclass
@@ -45,6 +46,15 @@ class ActionSpec:
 	# keypress confirms past), a block cannot be overridden — e.g. merging a PR
 	# whose build is failing.
 	block: Callable[[dict], str | None] | None = None
+	# Tab-level: fires without a row (even on an empty table); handler gets None
+	# and runs on the UI thread, so it must be instant. See ActionResult.REFRESH.
+	tab_level: bool = False
+	# Hidden (legend + key inert) while this returns False, e.g. `l` Log in only
+	# once a login has failed.
+	visible: Callable[[], bool] | None = None
+
+	def shown(self) -> bool:
+		return self.visible is None or self.visible()
 
 
 def format_age(created_at: str) -> str:
@@ -80,12 +90,12 @@ class TabConfig:
 	# `jq_projection` a jq expr over the full response (reads .data.<alias>,
 	# and .data.viewer if needed) producing this tab's slice; `post_process`
 	# turns that slice into PRs.
-	alias: str
-	search_query: str
-	node_selection: str
-	jq_projection: str
-	post_process: Callable[[Any], list[dict]]
-	actions: list[ActionSpec]
+	alias: str = ""
+	search_query: str = ""
+	node_selection: str = ""
+	jq_projection: str = ""
+	post_process: Callable[[Any], list[dict]] = lambda slice: slice
+	actions: list[ActionSpec] = field(default_factory=list)
 	# Extra aliased search() blocks, merged by this tab's own jq_projection
 	# (which reads .data.<alias> directly). GitHub's search API has no OR or
 	# grouping operator, so "matches query A or query B" needs two separate
@@ -99,6 +109,16 @@ class TabConfig:
 	# Per-PR signature of the state worth flagging on the tab title; a change
 	# (in checks, approval, etc.) marks an inactive tab as updated.
 	state_signature: Callable[[dict], Any] = lambda pr: None
+	# Replaces the "(count)" in the tab title: badge(rows, fetch_failed) -> str
+	# or a styled Text (e.g. a coloured ⚠).
+	title_badge: Callable[[list[dict], bool], str | Text] | None = None
+	# Standalone tab: when set, the tab is left out of the combined fetch and
+	# polls `fetch(notify)` (-> rows, each with an `id`) on its own countdown,
+	# every `poll_seconds` (None = the app's interval). `notify(text)` sets the
+	# tab's breadcrumb from the fetch thread. For non-GitHub sources.
+	fetch: Callable[[Callable[[str], None]], list[dict]] | None = None
+	poll_seconds: int | None = None
+	noun: str = "PR"  # row noun in the App status count, e.g. "app"
 
 
 @dataclass
@@ -115,6 +135,10 @@ class TabState:
 	has_updates: bool = False
 	signatures: dict[str, Any] = field(default_factory=dict)  # pr_id -> last state_signature
 	pending_confirm: tuple[str, str] | None = None  # (pr_id, action key) armed for confirm
+	# Standalone tabs only (config.fetch set); combined tabs use the app-level state.
+	loading: bool = False
+	seconds_until_refresh: int = 0
+	fetch_failed: bool = False
 
 
 class PRMenuApp(App):
@@ -236,6 +260,9 @@ class PRMenuApp(App):
 			table.add_column("PR", key="pr", width=10)
 			table.add_column("Status", key="status", width=20)
 		self._refresh_all()
+		for i, ts in enumerate(self._tabs):
+			if ts.config.fetch is not None:
+				self._refresh_standalone(i)
 		self.set_interval(1, self._tick_countdown)
 		self.set_interval(0.1, self._tick_spinner)
 		self._render_countdown()
@@ -262,10 +289,13 @@ class PRMenuApp(App):
 				c.get_render_width(table) for k, c in table.columns.items() if k.value != "pr"
 			)
 			padding = 2 * table.cell_padding
-			available = max(10, table.size.width - others - padding)
+			# scrollable_content_region excludes the vertical scrollbar, which
+			# appears once rows overflow (else the rightmost column gets clipped).
+			available = max(10, table.scrollable_content_region.width - others - padding)
 			pr_col.width = available
 			pr_col.auto_width = False
 			table._require_update_dimensions = True
+			table._clear_caches()  # cached row renders keep the old column width
 			table.refresh()
 
 	def _active_index(self) -> int:
@@ -274,24 +304,38 @@ class PRMenuApp(App):
 			return int(active.removeprefix("tab-"))
 		return 0
 
+	def _combined_tabs(self) -> list[TabState]:
+		return [ts for ts in self._tabs if ts.config.fetch is None]
+
 	def _tick_countdown(self) -> None:
-		# One countdown drives the single combined fetch. Pause it while loading
-		# or while any tab has a PR mid-action (acting/finishing).
-		if self._loading:
+		# One countdown drives the single combined fetch; each standalone tab has
+		# its own. Pause while loading or while a tab has a row mid-action.
+		for i, ts in enumerate(self._tabs):
+			if ts.config.fetch is None or ts.loading or ts.acting_pr_ids or ts.finishing_pr_ids:
+				continue
+			ts.seconds_until_refresh -= 1
+			if ts.seconds_until_refresh <= 0:
+				self._refresh_standalone(i)
+		self._tick_combined_countdown()
+		self._render_countdown()
+
+	def _tick_combined_countdown(self) -> None:
+		combined = self._combined_tabs()
+		if not combined or self._loading:
 			return
-		if any(ts.acting_pr_ids or ts.finishing_pr_ids for ts in self._tabs):
+		if any(ts.acting_pr_ids or ts.finishing_pr_ids for ts in combined):
 			return
 		self._seconds_until_refresh -= 1
 		if self._seconds_until_refresh <= 0:
 			self._refresh_all()
-		self._render_countdown()
 
 	def _tick_spinner(self) -> None:
 		any_acting = any(ts.acting_pr_ids for ts in self._tabs)
-		if not self._loading and not any_acting:
+		any_loading = self._loading or any(ts.loading for ts in self._tabs)
+		if not any_loading and not any_acting:
 			return
 		self._spinner_frame = (self._spinner_frame + 1) % len(self.SPINNER_FRAMES)
-		if self._loading:
+		if any_loading:
 			self._render_countdown()
 		if any_acting:
 			for i, ts in enumerate(self._tabs):
@@ -300,14 +344,17 @@ class PRMenuApp(App):
 
 	def _render_countdown(self) -> None:
 		ts = self._tabs[self._active_index()]
-		count = f"{len(ts.prs)} PR(s) · "
-		if self._loading:
+		standalone = ts.config.fetch is not None
+		loading = ts.loading if standalone else self._loading
+		seconds = ts.seconds_until_refresh if standalone else self._seconds_until_refresh
+		count = f"{len(ts.prs)} {ts.config.noun}(s) · "
+		if loading:
 			text = f"{count}{self.SPINNER_FRAMES[self._spinner_frame]} Updating"
 		else:
-			text = f"{count}Updating in {self._seconds_until_refresh}s…"
+			text = f"{count}Updating in {seconds}s…"
 		countdown = self.query_one("#countdown", Static)
 		countdown.update(text)
-		countdown.set_class(self._loading, "running")
+		countdown.set_class(loading, "running")
 
 	def _left_cell(self, ts: TabState, pr: dict) -> str:
 		return ts.config.pr_label(pr)
@@ -336,6 +383,12 @@ class PRMenuApp(App):
 		else:
 			pr = next((p for p in ts.prs if p["id"] == pr_id), None)
 			content = ts.config.idle_label(pr) if pr else ""
+			if isinstance(content, Text):  # idle_label may style itself, e.g. a warning colour
+				content = content.copy()
+				content.justify = "right"
+				if dim:
+					content.stylize("dim")
+				return content
 		return Text(content, style="dim" if dim else "", justify="right")
 
 	def _refresh_row(self, i: int, pr_id: str, dim: bool = False) -> None:
@@ -357,7 +410,12 @@ class PRMenuApp(App):
 			except Exception:
 				continue
 			marker = f" {self.NEW_MARKER}" if ts.has_updates else ""
-			tab.label = f"{ts.config.name} ({len(ts.prs)}){marker}"
+			badge = f"({len(ts.prs)})"
+			if ts.config.title_badge is not None:
+				badge = ts.config.title_badge(ts.prs, ts.fetch_failed)
+			label = Text.assemble(ts.config.name, " ", badge, marker)
+			label.rstrip()
+			tab.label = label
 			tab.set_class(ts.has_updates, "updated")
 
 	def _render_hotkeys(self) -> None:
@@ -366,6 +424,8 @@ class PRMenuApp(App):
 			flashed = self._flashed_action[1] if self._flashed_action and self._flashed_action[0] == i else None
 			parts = []
 			for a in ts.config.actions:
+				if not a.shown():
+					continue
 				part = f" [b]{key_label.get(a.key, a.key)}[/b] {a.label} "
 				# Reverse fg/bg on the just-triggered action; padding is static so layout never shifts.
 				parts.append(f"[reverse]{part}[/]" if a.key == flashed else part)
@@ -390,7 +450,7 @@ class PRMenuApp(App):
 		# One GraphQL doc: shared viewer + one aliased search() block per tab,
 		# plus any extra_search blocks a tab needs (see TabConfig.extra_search).
 		blocks = []
-		for ts in self._tabs:
+		for ts in self._combined_tabs():
 			blocks.append(f"""  {ts.config.alias}: search(query: "{ts.config.search_query}", type: ISSUE, first: 100) {{
     edges {{ node {{ ... on PullRequest {{ {ts.config.node_selection} }} }} }}
   }}""")
@@ -403,10 +463,12 @@ class PRMenuApp(App):
 	def _combined_jq(self) -> str:
 		# Project each tab's slice under its alias; each fragment reads the full
 		# response (.data.<alias>, and .data.viewer where needed).
-		parts = [f"  {ts.config.alias}: ({ts.config.jq_projection})" for ts in self._tabs]
+		parts = [f"  {ts.config.alias}: ({ts.config.jq_projection})" for ts in self._combined_tabs()]
 		return "{\n" + ",\n".join(parts) + "\n}"
 
 	def _refresh_all(self) -> None:
+		if not self._combined_tabs():
+			return
 		self.run_worker(
 			self._fetch_all,
 			thread=True,
@@ -437,6 +499,7 @@ class PRMenuApp(App):
 			results = [
 				(i, ts.config.post_process(response.get(ts.config.alias)))
 				for i, ts in enumerate(self._tabs)
+				if ts.config.fetch is None
 			]
 		except Exception as e:
 			self._mark_loading(False)
@@ -448,6 +511,40 @@ class PRMenuApp(App):
 			self._apply_prs(i, prs)
 		self._mark_loading(False)
 
+	def _refresh_standalone(self, i: int) -> None:
+		ts = self._tabs[i]
+		ts.seconds_until_refresh = ts.config.poll_seconds or self._poll_seconds
+		ts.loading = True
+		self._render_countdown()
+		self.run_worker(
+			lambda: self._fetch_standalone(i),
+			thread=True,
+			exclusive=True,
+			group=f"fetch-{i}",
+		)
+
+	def _fetch_standalone(self, i: int) -> None:
+		try:
+			notify = lambda text: self.call_from_thread(self._set_breadcrumb, text, i)
+			rows = self._tabs[i].config.fetch(notify)
+		except Exception as e:
+			self.call_from_thread(self._on_standalone_done, i, None, e)
+			return
+		self.call_from_thread(self._on_standalone_done, i, rows, None)
+
+	def _on_standalone_done(self, i: int, rows: list[dict] | None, error: Exception | None) -> None:
+		ts = self._tabs[i]
+		ts.loading = False
+		ts.fetch_failed = error is not None
+		if error is not None:
+			self._set_breadcrumb(f"fetch failed: {error}", i)
+		else:
+			self._apply_prs(i, rows)
+		self._render_statusbar()
+		self._render_countdown()
+		self._render_hotkeys()  # fetch outcome can flip an action's visibility
+		self._render_tab_labels()  # a failure can change the title badge
+
 	def _mark_loading(self, loading: bool) -> None:
 		self._loading = loading
 		self._render_countdown()
@@ -457,8 +554,10 @@ class PRMenuApp(App):
 		self._render_statusbar()
 
 	def _render_statusbar(self) -> None:
-		# Orange border on the status area while the last combined fetch failed.
-		self.query_one("#statusbar").set_class(self._fetch_failed, "error")
+		# Orange border on the status area while the active tab's last fetch failed.
+		ts = self._tabs[self._active_index()]
+		failed = ts.fetch_failed if ts.config.fetch is not None else self._fetch_failed
+		self.query_one("#statusbar").set_class(failed, "error")
 
 	def _reset_countdown(self) -> None:
 		self._seconds_until_refresh = self._poll_seconds
@@ -513,6 +612,12 @@ class PRMenuApp(App):
 						table.update_cell(pr["id"], col.key, value)
 					except Exception:
 						pass
+				# The pr column (pr_label) can change too, e.g. a PR retitled or
+				# an app's concern colour clearing.
+				try:
+					table.update_cell(pr["id"], "pr", self._left_cell(ts, pr))
+				except Exception:
+					pass
 				# The status column (idle_label) can change too, e.g. approval state.
 				self._refresh_row(i, pr["id"])
 			self._render_tab_labels()
@@ -923,13 +1028,26 @@ class PRMenuApp(App):
 	def on_key(self, event) -> None:
 		i = self._active_index()
 		spec = self._tabs[i].actions_by_key.get(event.key)
-		if spec is None or event.key == "enter":
+		if spec is None or event.key == "enter" or not spec.shown():
+			return
+		if spec.tab_level:
+			event.stop()
+			self._run_tab_action(i, spec)
 			return
 		table = self.query_one(f"#{self._tabs[i].table_id}", DataTable)
 		if table.row_count == 0:
 			return
 		event.stop()
 		self._run_action_on_tab(i, table.cursor_row, event.key)
+
+	def _run_tab_action(self, i: int, spec: ActionSpec) -> None:
+		self._flash_action(i, spec.key)
+		result = spec.handler(None)
+		ts = self._tabs[i]
+		# Mid-fetch: the next cycle picks up whatever the handler set.
+		if result == ActionResult.REFRESH and ts.config.fetch is not None and not ts.loading:
+			self._refresh_standalone(i)
+		self._render_hotkeys()
 
 	def _arm_confirm(self, i: int, pr_id: str, key: str, prompt: str) -> None:
 		ts = self._tabs[i]
