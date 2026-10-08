@@ -14,10 +14,13 @@ CHECK_EMOJI = {
 
 # Review state derived from actual reviews (reviewDecision is null when a repo
 # does not *require* review, even after someone approves). approved sorts first.
+# PARTIAL: approved by someone, but a required review (e.g. a second code-owner
+# team) is still missing.
 REVIEW_STATE = {
 	'APPROVED': ('✅ Approved', 0),
-	'AWAITING': ('⌛ Awaiting review', 1),
-	'CHANGES_REQUESTED': ('🔁 Changes requested', 2),
+	'PARTIAL': ('🌗 Partly approved', 1),
+	'AWAITING': ('⌛ Awaiting review', 2),
+	'CHANGES_REQUESTED': ('🔁 Changes requested', 3),
 }
 
 
@@ -44,8 +47,20 @@ def review_state(pr) -> str:
 	if 'CHANGES_REQUESTED' in states:
 		return 'CHANGES_REQUESTED'
 	if 'APPROVED' in states:
+		# Trust GitHub's verdict, not pending requests: owners on one CODEOWNERS
+		# line are alternatives, so a leftover request (e.g. a bot listed for
+		# automerge) needn't block. reviewDecision null = review not required.
+		if pr.get('reviewDecision') == 'REVIEW_REQUIRED':
+			return 'PARTIAL'
 		return 'APPROVED'
 	return 'AWAITING'
+
+
+def preview(pr) -> str:
+	owners = pr.get('pendingOwners') or []
+	if review_state(pr) != 'PARTIAL' or not owners:
+		return pr['body']
+	return f"**Awaiting code owners:** {', '.join('@' + o for o in owners)}\n\n---\n\n{pr['body'] or ''}"
 
 
 def post_process(prs):
@@ -84,10 +99,11 @@ def merge_needs_confirm(pr) -> bool:
 
 
 def merge_descriptor(pr) -> str:
-	unapproved = review_state(pr) != 'APPROVED'
+	state = review_state(pr)
+	unapproved = 'partly approved' if state == 'PARTIAL' else 'unapproved' if state != 'APPROVED' else None
 	if unapproved and pr.get('commentCount'):
-		return 'unapproved, commented-on'
-	return 'unapproved' if unapproved else 'commented-on'
+		return f'{unapproved}, commented-on'
+	return unapproved or 'commented-on'
 
 
 def review_label(pr):
@@ -118,6 +134,16 @@ NODE_SELECTION = """
           state
           isDraft
           mergeable
+          reviewDecision
+          reviewRequests(first: 20) {
+            nodes {
+              asCodeOwner
+              requestedReviewer {
+                ... on Team { slug }
+                ... on User { login }
+              }
+            }
+          }
           comments { totalCount }
           reviewThreads { totalCount }
           latestOpinionatedReviews(last: 20) {
@@ -149,6 +175,8 @@ JQ_PROJECTION = """
    state: .state,
    isDraft: .isDraft,
    mergeable: .mergeable,
+   reviewDecision: .reviewDecision,
+   pendingOwners: [.reviewRequests.nodes[] | select(.asCodeOwner) | .requestedReviewer | (.slug // .login)],
    commentCount: (.comments.totalCount + .reviewThreads.totalCount),
    reviews: [.latestOpinionatedReviews.nodes[].state],
    repository: { nameWithOwner: .repository.nameWithOwner, name: .repository.name },
@@ -194,7 +222,7 @@ TAB = TabConfig(
 		*([ActionSpec(key="p", label="Post to Slack", handler=post_to_slack)]
 		  if slack.enabled() else []),
 	],
-	status_bar=lambda pr: pr['body'],
+	status_bar=preview,
 	columns=[
 		ColumnSpec(
 			key="checks",
@@ -218,5 +246,5 @@ TAB = TabConfig(
 	pr_label=lambda pr: pr['title'],
 	idle_label=review_label,
 	diff_fetch=fetch_diff,
-	state_signature=lambda pr: (pr['checkStatus'], review_state(pr), pr.get('isDraft'), pr.get('commentCount'), has_conflicts(pr)),
+	state_signature=lambda pr: (pr['checkStatus'], review_state(pr), pr.get('isDraft'), pr.get('commentCount'), has_conflicts(pr), tuple(pr.get('pendingOwners') or ())),
 )
