@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from rich.text import Text
 
-from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age
+from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age, spinner
 
 POLL_SECONDS = 10  # deploy state; other metrics are re-fetched every METRICS_SECONDS
 METRICS_SECONDS = 60
@@ -289,6 +289,13 @@ def deploying(row) -> bool:
 	return bool(desired) and (bool(row["gen_lag"]) or updated < desired or total > updated)
 
 
+def health_label(row) -> str:
+	# health() for display: the deploying ↻ becomes the spinner. health() itself
+	# stays stable (state_signature, prefix checks).
+	label = health(row)
+	return spinner() + label[1:] if label[0] == "↻" else label
+
+
 def health(row) -> str:
 	ready, desired = row["ready"], row["desired"]
 	if desired is None:
@@ -316,7 +323,7 @@ def health(row) -> str:
 
 # Concern colour by health-label prefix; the offending column per label.
 CONCERN_COLOR = {"✗": "bold red", "⚠": "bold yellow"}
-DEPLOY_COLOR = "#c8f4f4"  # cyan-tinted white; whole row while deploying
+DEPLOY_COLOR = "#a6f0f0"  # cyan-tinted white; whole row while deploying
 CONCERN_COLUMN = {
 	"down": "ready", "degraded": "ready", "stuck": "ready",
 	"OOMKilled": "restarts", "restarting": "restarts",
@@ -415,7 +422,7 @@ def ready(row) -> str:
 def replicas(row) -> str:
 	# Mid-rollout: new-spec pods vs desired.
 	if health(row) == "↻ deploying":
-		return f"↻ {int(row['updated'] or 0)}/{int(row['desired'])}"
+		return f"{spinner()} {int(row['updated'] or 0)}/{int(row['desired'])}"
 	return ready(row)
 
 
@@ -453,7 +460,8 @@ TAB = TabConfig(
 	],
 	status_bar=preview,
 	pr_label=concern_styled(lambda row: row["app"]),
-	idle_label=concern_styled(health),
+	idle_label=concern_styled(health_label),
+	animated=lambda r: health(r) == "↻ deploying",
 	# Flag the inactive tab title only when an app's health changes, not on
 	# every metric wiggle.
 	state_signature=health,

@@ -126,6 +126,8 @@ class TabConfig:
 	# Bottom pane title (non-diff) and table:preview height ratio (fr).
 	preview_title: str = "Preview | Body"
 	pane_ratio: tuple[int, int] = (2, 3)
+	# Rows re-rendered on every spinner tick (renders may show `spinner()`).
+	animated: Callable[[dict], bool] = lambda pr: False
 
 
 @dataclass
@@ -149,6 +151,14 @@ class TabState:
 
 
 RESTART = "restart"
+
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_spinner_frame = 0  # shared, advanced by PRMenuApp._tick_spinner
+
+
+def spinner() -> str:
+	# Current spinner frame, for renders of `TabConfig.animated` rows.
+	return SPINNER_FRAMES[_spinner_frame]
 
 
 class PRMenuApp(App):
@@ -202,7 +212,6 @@ class PRMenuApp(App):
 		Binding("alt+pagedown", "jump_file(1)", "Next file", priority=True, show=False),
 	]
 
-	SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 	NEW_MARKER = "●"
 
 	def __init__(
@@ -229,7 +238,6 @@ class PRMenuApp(App):
 		self._loading = False
 		self._seconds_until_refresh = poll_seconds
 		self._fetch_failed = False  # last combined fetch raised; clears on success
-		self._spinner_frame = 0
 		self._diff_mode_pr_ids: set[str] = set()
 		self._diff_cache: dict[str, tuple[str, str]] = {}
 		self._breadcrumb_token = 0
@@ -422,17 +430,21 @@ class PRMenuApp(App):
 			self._refresh_all()
 
 	def _tick_spinner(self) -> None:
+		global _spinner_frame
 		any_acting = any(ts.acting_pr_ids for ts in self._tabs)
 		any_loading = self._loading or any(ts.loading for ts in self._tabs)
-		if not any_loading and not any_acting:
+		animated = [(i, pr) for i, ts in enumerate(self._tabs) for pr in ts.prs if ts.config.animated(pr)]
+		if not any_loading and not any_acting and not animated:
 			return
-		self._spinner_frame = (self._spinner_frame + 1) % len(self.SPINNER_FRAMES)
+		_spinner_frame = (_spinner_frame + 1) % len(SPINNER_FRAMES)
 		if any_loading:
 			self._render_countdown()
 		if any_acting:
 			for i, ts in enumerate(self._tabs):
 				for pr_id in list(ts.acting_pr_ids.keys()):
 					self._refresh_row(i, pr_id)
+		for i, pr in animated:
+			self._refresh_cells(i, pr)
 
 	def _render_countdown(self) -> None:
 		ts = self._tabs[self._active_index()]
@@ -441,7 +453,7 @@ class PRMenuApp(App):
 		seconds = ts.seconds_until_refresh if standalone else self._seconds_until_refresh
 		count = f"{len(ts.prs)} {ts.config.noun}(s) · "
 		if loading:
-			text = f"{count}{self.SPINNER_FRAMES[self._spinner_frame]} Updating"
+			text = f"{count}{spinner()} Updating"
 		else:
 			text = f"{count}Updating in {seconds}s…"
 		countdown = self.query_one("#countdown", Static)
@@ -466,7 +478,7 @@ class PRMenuApp(App):
 	def _right_cell(self, ts: TabState, pr_id: str, dim: bool = False) -> Text:
 		if pr_id in ts.acting_pr_ids:
 			label = ts.acting_pr_ids[pr_id]
-			content = f"{self.SPINNER_FRAMES[self._spinner_frame]} {label}"
+			content = f"{spinner()} {label}"
 		elif pr_id in ts.finishing_pr_ids:
 			content = "✓ Done"
 		elif pr_id in ts.failed_pr_ids:
@@ -490,6 +502,25 @@ class PRMenuApp(App):
 			table.update_cell(pr_id, "status", self._right_cell(ts, pr_id, dim=dim))
 		except Exception:
 			pass
+
+	def _refresh_cells(self, i: int, pr: dict) -> None:
+		# Re-render every cell of a row in place.
+		ts = self._tabs[i]
+		table = self.query_one(f"#{ts.table_id}", DataTable)
+		for j, col in enumerate(ts.config.columns):
+			value = self._marker_cell(ts, pr) if j == 0 else col.render(pr)
+			try:
+				table.update_cell(pr["id"], col.key, value)
+			except Exception:
+				pass
+		# The pr column (pr_label) can change too, e.g. a PR retitled or
+		# an app's concern colour clearing.
+		try:
+			table.update_cell(pr["id"], "pr", self._left_cell(ts, pr))
+		except Exception:
+			pass
+		# The status column (idle_label) can change too, e.g. approval state.
+		self._refresh_row(i, pr["id"])
 
 	def _render_tab_labels(self) -> None:
 		try:
@@ -698,22 +729,8 @@ class PRMenuApp(App):
 			if self._detect_updates(i, visible, had_prs=True):
 				ts.has_updates = True
 			ts.prs = visible
-			table = self.query_one(f"#{ts.table_id}", DataTable)
 			for pr in visible:
-				for j, col in enumerate(ts.config.columns):
-					value = self._marker_cell(ts, pr) if j == 0 else col.render(pr)
-					try:
-						table.update_cell(pr["id"], col.key, value)
-					except Exception:
-						pass
-				# The pr column (pr_label) can change too, e.g. a PR retitled or
-				# an app's concern colour clearing.
-				try:
-					table.update_cell(pr["id"], "pr", self._left_cell(ts, pr))
-				except Exception:
-					pass
-				# The status column (idle_label) can change too, e.g. approval state.
-				self._refresh_row(i, pr["id"])
+				self._refresh_cells(i, pr)
 			self._render_tab_labels()
 			return
 
