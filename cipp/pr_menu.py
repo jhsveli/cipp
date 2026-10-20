@@ -187,6 +187,8 @@ class PRMenuApp(App):
 	Tab.updated { color: white; text-style: not bold; }
 	DataTable { height: 1fr; background: $surface; }
 	DataTable:focus { background-tint: 0%; }
+	/* Cursor row: bold + underline, no background; cell colours win (cursor_foreground_priority). */
+	DataTable > .datatable--cursor, DataTable:focus > .datatable--cursor { background: transparent; color: white; text-style: bold underline; }
 	#filelist { layer: overlay; dock: top; margin-top: 1; width: 100%; height: auto; max-height: 40%; padding: 0 1; display: none;
 		border: round $accent; border-title-color: $accent; background: $panel; overflow-y: auto; }
 	#filelist.visible { display: block; }
@@ -263,6 +265,7 @@ class PRMenuApp(App):
 						id=ts.table_id,
 						show_header=ts.config.show_header,
 						cursor_type="row",
+						cursor_foreground_priority="renderable",
 						zebra_stripes=False,
 					)
 					yield Static("", id=f"hotkeys-{i}", classes="hotkeys")
@@ -468,12 +471,14 @@ class PRMenuApp(App):
 
 	def _marker_cell(self, ts: TabState, pr: dict) -> Text:
 		if ts.config.columns:
-			value = str(ts.config.columns[0].render(pr))
+			value = ts.config.columns[0].render(pr)
 		else:
 			value = ts.config.pr_label(pr)
+		if not isinstance(value, Text):  # renders may style themselves
+			value = Text(str(value))
 		if pr["id"] in ts.unseen_pr_ids:
 			return Text.assemble((f"{self.NEW_MARKER} ", "bold cyan"), value)
-		return Text(f"  {value}")
+		return Text.assemble("  ", value)
 
 	def _right_cell(self, ts: TabState, pr_id: str, dim: bool = False) -> Text:
 		if pr_id in ts.acting_pr_ids:
