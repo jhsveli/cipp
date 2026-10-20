@@ -5,6 +5,7 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -13,7 +14,8 @@ from rich.text import Text
 
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, TabConfig, format_age
 
-POLL_SECONDS = 60
+POLL_SECONDS = 10  # deploy state; other metrics are re-fetched every METRICS_SECONDS
+METRICS_SECONDS = 60
 TIMEOUT = 30  # per shifterctl call
 LOGIN_TIMEOUT = 180  # once a login prompt shows: time allowed to confirm in browser
 STAGE_ORDER = {"prod": 0, "test": 1}
@@ -26,16 +28,20 @@ STAGE_ORDER = {"prod": 0, "test": 1}
 # CPU/memory = the worst pod's usage vs its limits (a single pod OOMs/throttles).
 _ISTIO = 'istio_requests_total{$DST,reporter="destination"}'
 _ISTIO_5XX = 'istio_requests_total{$DST,reporter="destination",response_code=~"5.."}'
-QUERIES = {
+# Deploy state, polled every POLL_SECONDS as one combined query per cluster
+# (`bulk`). Rollout: pods on the new spec / all pods (old ones linger until it's
+# done), spec generations not yet seen by the controller, Progressing=false (stuck).
+DEPLOY_QUERIES = {
 	"ready": 'sum by (namespace) (kube_deployment_status_replicas_available{$NS})',
 	"desired": 'sum by (namespace) (kube_deployment_spec_replicas{$NS})',
-	# Rollout: pods on the new spec / all pods (old ones linger until it's done),
-	# spec generations not yet seen by the controller, Progressing=false (stuck).
 	"updated": 'sum by (namespace) (kube_deployment_status_replicas_updated{$NS})',
 	"total": 'sum by (namespace) (kube_deployment_status_replicas{$NS})',
 	"gen_lag": 'sum by (namespace) (max by (namespace, deployment) (kube_deployment_metadata_generation{$NS})'
 		' - max by (namespace, deployment) (kube_deployment_status_observed_generation{$NS}))',
 	"stuck": 'count by (namespace) (kube_deployment_status_condition{$NS,condition="Progressing",status="false"} == 1)',
+}
+# Other metrics, one query each (a failing one blanks only its column).
+QUERIES = {
 	"restarts": 'sum by (namespace) (increase(kube_pod_container_status_restarts_total{$NS}[1h]))',
 	"cpu": 'max by (namespace) ('
 		'sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{$NS,container!="",container!="POD"}[5m]))'
@@ -167,6 +173,8 @@ def shifterctl_json(args: list[str], allow_login=False, open_browser=False, noti
 	return json.loads(out[start.start():])
 
 
+_metrics: dict | None = None  # (cluster, metric) -> results of QUERIES, cached METRICS_SECONDS
+_metrics_at = 0.0
 _deployments: list[dict] | None = None  # cached once found; team apps rarely change
 
 
@@ -183,9 +191,27 @@ def deployments(**login) -> list[dict]:
 	return _deployments
 
 
-def query(cluster: str, metric: str, promql: str, **login) -> dict:
+def _series(cluster: str, promql: str, **login) -> list[dict]:
 	res = shifterctl_json(["prom", "query", "--cluster", cluster, "-o", "json", promql], **login)
-	series = res.get("Vector") or []
+	return res.get("Vector") or []
+
+
+def bulk(queries: dict[str, str]) -> str:
+	# One PromQL for several numeric metrics: each tagged with label m=<metric>
+	# so `or` keeps them all apart (see `query_bulk`).
+	return " or ".join(f'label_replace({q}, "m", "{m}", "", "")' for m, q in queries.items())
+
+
+def query_bulk(cluster: str, promql: str, **login) -> dict[str, dict]:
+	# metric -> {namespace: value}, for a `bulk` query.
+	out: dict[str, dict] = {}
+	for s in _series(cluster, promql, **login):
+		out.setdefault(s["Labels"]["m"], {})[s["Labels"]["namespace"]] = float(s["Value"])
+	return out
+
+
+def query(cluster: str, metric: str, promql: str, **login) -> dict:
+	series = _series(cluster, promql, **login)
 	label = LABEL_METRICS.get(metric)
 	if label is None:
 		return {s["Labels"]["namespace"]: float(s["Value"]) for s in series}
@@ -225,22 +251,33 @@ def _fetch(login: dict) -> list[dict]:
 			.replace("$NS", f'namespace=~"{regex}",{_NOT_SUPPORT}')
 			.replace("$DST", f'destination_workload_namespace=~"{regex}"'))
 
+	# key -> zero-arg call. Deploy state every poll; the rest when stale.
 	jobs = {
-		(cluster, metric): expand(promql, nss)
+		(cluster, "deploy"): (lambda c=cluster, q=expand(bulk(DEPLOY_QUERIES), nss), **kw: query_bulk(c, q, **kw))
 		for cluster, nss in by_cluster.items()
-		for metric, promql in QUERIES.items()
 	}
+	global _metrics, _metrics_at
+	refresh_metrics = _metrics is None or time.monotonic() - _metrics_at >= METRICS_SECONDS
+	if refresh_metrics:
+		jobs |= {
+			(cluster, metric): (lambda c=cluster, m=metric, q=expand(promql, nss), **kw: query(c, m, q, **kw))
+			for cluster, nss in by_cluster.items()
+			for metric, promql in QUERIES.items()
+		}
 	# First query runs alone as the login gate; the rest fan out on its session.
-	(first, first_q), *rest = jobs.items()
-	results = {first: query(*first, first_q, **login)}
+	(first, first_job), *rest = jobs.items()
+	results = {first: first_job(**login)}
 	with ThreadPoolExecutor(max_workers=len(rest) or 1) as pool:
-		futures = {k: pool.submit(query, *k, q) for k, q in rest}
+		futures = {k: pool.submit(job) for k, job in rest}
 		results |= {k: f.result() for k, f in futures.items()}
+	if refresh_metrics:
+		_metrics, _metrics_at = {k: v for k, v in results.items() if k[1] != "deploy"}, time.monotonic()
 	rows = [
 		{
 			**d,
 			"id": f"{d['app']}@{d['cluster']}",
-			**{m: results[(d["cluster"], m)].get(d["namespace"]) for m in QUERIES},
+			**{m: results[(d["cluster"], "deploy")].get(m, {}).get(d["namespace"]) for m in DEPLOY_QUERIES},
+			**{m: _metrics[(d["cluster"], m)].get(d["namespace"]) for m in QUERIES},
 		}
 		for d in deps
 	]
