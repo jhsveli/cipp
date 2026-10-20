@@ -29,6 +29,13 @@ _ISTIO_5XX = 'istio_requests_total{$DST,reporter="destination",response_code=~"5
 QUERIES = {
 	"ready": 'sum by (namespace) (kube_deployment_status_replicas_available{$NS})',
 	"desired": 'sum by (namespace) (kube_deployment_spec_replicas{$NS})',
+	# Rollout: pods on the new spec / all pods (old ones linger until it's done),
+	# spec generations not yet seen by the controller, Progressing=false (stuck).
+	"updated": 'sum by (namespace) (kube_deployment_status_replicas_updated{$NS})',
+	"total": 'sum by (namespace) (kube_deployment_status_replicas{$NS})',
+	"gen_lag": 'sum by (namespace) (max by (namespace, deployment) (kube_deployment_metadata_generation{$NS})'
+		' - max by (namespace, deployment) (kube_deployment_status_observed_generation{$NS}))',
+	"stuck": 'count by (namespace) (kube_deployment_status_condition{$NS,condition="Progressing",status="false"} == 1)',
 	"restarts": 'sum by (namespace) (increase(kube_pod_container_status_restarts_total{$NS}[1h]))',
 	"cpu": 'max by (namespace) ('
 		'sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{$NS,container!="",container!="POD"}[5m]))'
@@ -240,6 +247,11 @@ def _fetch(login: dict) -> list[dict]:
 	return sorted(rows, key=lambda r: (STAGE_ORDER.get(r["stage"], 9), r["app"]))
 
 
+def deploying(row) -> bool:
+	desired, updated, total = row["desired"], row["updated"] or 0, row["total"] or 0
+	return bool(desired) and (bool(row["gen_lag"]) or updated < desired or total > updated)
+
+
 def health(row) -> str:
 	ready, desired = row["ready"], row["desired"]
 	if desired is None:
@@ -248,6 +260,10 @@ def health(row) -> str:
 		return "· scaled to 0"
 	if not ready:
 		return "✗ down"
+	if row["stuck"]:
+		return "⚠ stuck"
+	if deploying(row):
+		return "↻ deploying"
 	if ready < desired:
 		return "⚠ degraded"
 	if "OOMKilled" in (row["oom"] or []):
@@ -263,8 +279,9 @@ def health(row) -> str:
 
 # Concern colour by health-label prefix; the offending column per label.
 CONCERN_COLOR = {"✗": "bold red", "⚠": "bold yellow"}
+DEPLOY_COLOR = "#c8f4f4"  # cyan-tinted white; whole row while deploying
 CONCERN_COLUMN = {
-	"down": "ready", "degraded": "ready",
+	"down": "ready", "degraded": "ready", "stuck": "ready",
 	"OOMKilled": "restarts", "restarting": "restarts",
 	"5xx": "err", "memory": "mem",
 }
@@ -281,18 +298,21 @@ def concern(row) -> tuple[str, str | None] | None:
 
 def highlight(key: str, render):
 	# Column render that paints the cell in the concern colour when it's the
-	# offending metric.
+	# offending metric, or the deploy colour while deploying.
 	def styled(row):
 		c = concern(row)
-		return Text(render(row), style=c[0] if c and c[1] == key else "")
+		if c:
+			return Text(render(row), style=c[0] if c[1] == key else "")
+		return Text(render(row), style=DEPLOY_COLOR if deploying(row) else "")
 	return styled
 
 
 def concern_styled(render):
-	# Render painted in the concern colour whenever the app has one (app name, health).
+	# Render painted in the concern colour whenever the app has one (app name,
+	# health), else the deploy colour while deploying.
 	def styled(row):
 		c = concern(row)
-		return Text(render(row), style=c[0] if c else "")
+		return Text(render(row), style=c[0] if c else DEPLOY_COLOR if deploying(row) else "")
 	return styled
 
 
@@ -349,10 +369,17 @@ def tags(row) -> list[str]:
 	return [img.rsplit(":", 1)[-1] for img in row["images"] or []]
 
 
-def replicas(row) -> str:
+def ready(row) -> str:
 	if row["desired"] is None:
 		return "–"
 	return f"{int(row['ready'] or 0)}/{int(row['desired'])}"
+
+
+def replicas(row) -> str:
+	# Mid-rollout: new-spec pods vs desired.
+	if health(row) == "↻ deploying":
+		return f"↻ {int(row['updated'] or 0)}/{int(row['desired'])}"
+	return ready(row)
 
 
 def restarts(row) -> str:
@@ -365,7 +392,7 @@ def preview(row) -> str:
 		images += " (rollout in progress)"
 	return f"""**{row['app']}** · {row['stage']} (`{row['cluster']}`, ns `{row['namespace']}`) · {health(row)}
 
-- **Replicas** {replicas(row)} ready · **restarts (1h)** {restarts(row)} · **reasons** {', '.join(row['oom'] or []) or '–'}
+- **Replicas** {ready(row)} ready · **updated** {int(row['updated'] or 0)} · **restarts (1h)** {restarts(row)} · **reasons** {', '.join(row['oom'] or []) or '–'}
 - **CPU** {pct(row['cpu'])} · **memory** {pct(row['mem'])} (worst pod vs limit)
 - **Traffic (5m)** {rps(row)} · **5xx** {pct(row['err'])} · **p95** {p95(row)}
 - **Deployed** {deployed(row)} ago · **image** {images}
@@ -399,14 +426,14 @@ TAB = TabConfig(
 	preview_title="Details",
 	pane_ratio=(3, 2),
 	columns=[
-		ColumnSpec(key="stage", label="Env", width=4, render=lambda r: r["stage"]),
-		ColumnSpec(key="ready", label="Ready", width=5, render=highlight("ready", replicas)),
+		ColumnSpec(key="stage", label="Env", width=4, render=highlight("stage", lambda r: r["stage"])),
+		ColumnSpec(key="ready", label="Ready", width=7, render=highlight("ready", replicas)),
 		ColumnSpec(key="restarts", label="Restarts", width=8, render=highlight("restarts", restarts)),
-		ColumnSpec(key="cpu", label="CPU", width=4, render=lambda r: pct(r["cpu"])),
+		ColumnSpec(key="cpu", label="CPU", width=4, render=highlight("cpu", lambda r: pct(r["cpu"]))),
 		ColumnSpec(key="mem", label="Mem", width=4, render=highlight("mem", lambda r: pct(r["mem"]))),
-		ColumnSpec(key="rps", label="Req/s", width=6, render=rps),
+		ColumnSpec(key="rps", label="Req/s", width=6, render=highlight("rps", rps)),
 		ColumnSpec(key="err", label="5xx", width=5, render=highlight("err", lambda r: pct(r["err"]))),
-		ColumnSpec(key="p95", label="p95", width=6, render=p95),
-		ColumnSpec(key="deployed", label="Deployed", width=8, render=deployed),
+		ColumnSpec(key="p95", label="p95", width=6, render=highlight("p95", p95)),
+		ColumnSpec(key="deployed", label="Deployed", width=8, render=highlight("deployed", deployed)),
 	],
 )
