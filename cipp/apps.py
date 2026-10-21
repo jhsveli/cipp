@@ -101,6 +101,17 @@ def login_failed() -> bool:
 	return _login_failed
 
 
+SHIFTER_URL = "https://shifter.intern.sparebank1.no/app/{app}"
+
+
+def opener(suffix: str):
+	# Handler opening the row's app page in the Shifter UI (+ sub-page suffix).
+	def handler(row) -> ActionResult:
+		webbrowser.open(SHIFTER_URL.format(app=row["app"]) + suffix)
+		return ActionResult.KEEP
+	return handler
+
+
 def request_login(_row) -> ActionResult:
 	global _login_requested
 	_login_requested = True
@@ -456,6 +467,19 @@ TAB = TabConfig(
 			handler=request_login,
 			tab_level=True,
 			visible=login_failed,
+		),
+		ActionSpec(
+			key="s",
+			label="Open in Shifter",
+			handler=opener(""),
+			breadcrumb=lambda r: f"Opened {r['app']} in Shifter",
+		),
+		# Shifter's per-app Grafana page; no generic app dashboard in Grafana itself.
+		ActionSpec(
+			key="g",
+			label="Open in Grafana",
+			handler=opener("/grafana"),
+			breadcrumb=lambda r: f"Opened {r['app']} Grafana in Shifter",
 		),
 	],
 	status_bar=preview,
