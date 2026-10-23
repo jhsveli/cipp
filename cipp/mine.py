@@ -1,6 +1,6 @@
 from . import slack
 from .abbreviate import short_repo
-from .cmd import exec, exec_input, merge_pr
+from .cmd import exec, exec_input, exec_json, merge_pr
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
 
 CHECK_EMOJI = {
@@ -89,6 +89,46 @@ def post_to_slack(pr):
 
 def fetch_diff(pr):
 	return exec(['gh', 'pr', 'diff', str(pr['number']), '-R', pr['repository']['nameWithOwner']])
+
+
+COMMENTS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      comments(first: 100) { nodes { author { login } createdAt body } }
+      reviewThreads(first: 100) {
+        nodes {
+          isResolved
+          path
+          line
+          comments(first: 50) { nodes { author { login } createdAt body } }
+        }
+      }
+    }
+  }
+}"""
+
+
+def _comment_md(c) -> str:
+	author = (c.get('author') or {}).get('login') or 'ghost'
+	return f"**@{author}** · {format_age(c['createdAt'])} ago\n\n{c['body']}"
+
+
+def fetch_comments(pr) -> str:
+	owner, name = pr['repository']['nameWithOwner'].split('/')
+	data = exec_json([
+		'gh', 'api', 'graphql', '-f', f'query={COMMENTS_QUERY}',
+		'-F', f'owner={owner}', '-F', f'name={name}', '-F', f"number={pr['number']}",
+	])['data']['repository']['pullRequest']
+	sections = []
+	for t in sorted(data['reviewThreads']['nodes'], key=lambda t: t['isResolved']):  # unresolved first
+		state = '✅ Resolved' if t['isResolved'] else '🧵 Unresolved'
+		where = f"{t['path']}:{t['line']}" if t.get('line') else t['path']
+		body = '\n\n'.join(_comment_md(c) for c in t['comments']['nodes'])
+		sections.append(f"### {state} · `{where}`\n\n{body}")
+	for c in data['comments']['nodes']:
+		sections.append(f"### 💬 Comment\n\n{_comment_md(c)}")
+	return '\n\n---\n\n'.join(sections) or 'No comments.'
 
 
 # Merging needs a confirm when the PR is unapproved *or* carries discussion —
@@ -246,5 +286,7 @@ TAB = TabConfig(
 	pr_label=lambda pr: pr['title'],
 	idle_label=review_label,
 	diff_fetch=fetch_diff,
+	comments_fetch=fetch_comments,
+	has_comments=lambda pr: bool(pr.get('commentCount')),
 	state_signature=lambda pr: (pr['checkStatus'], review_state(pr), pr.get('isDraft'), pr.get('commentCount'), has_conflicts(pr), tuple(pr.get('pendingOwners') or ())),
 )

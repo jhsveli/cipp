@@ -107,6 +107,10 @@ class TabConfig:
 	pr_label: Callable[[dict], str] = lambda pr: f"{pr['number']:>6} {pr['title']}"
 	idle_label: Callable[[dict], str] = lambda pr: ""
 	diff_fetch: Callable[[dict], str] | None = None
+	# `s` toggles a per-PR comments view (markdown from `comments_fetch`) in the
+	# preview; offered only on rows where `has_comments`.
+	comments_fetch: Callable[[dict], str] | None = None
+	has_comments: Callable[[dict], bool] = lambda pr: False
 	# Per-PR signature of the state worth flagging on the tab title; a change
 	# (in checks, approval, etc.) marks an inactive tab as updated.
 	state_signature: Callable[[dict], Any] = lambda pr: None
@@ -242,6 +246,8 @@ class PRMenuApp(App):
 		self._fetch_failed = False  # last combined fetch raised; clears on success
 		self._diff_mode_pr_ids: set[str] = set()
 		self._diff_cache: dict[str, tuple[str, str]] = {}
+		self._comments_mode_pr_ids: set[str] = set()
+		self._comments_cache: dict[str, tuple[Any, str]] = {}  # pr_id -> (state_signature, markdown)
 		self._breadcrumb_token = 0
 		self._flashed_action: tuple[int, str] | None = None  # (tab index, action key)
 		self._action_flash_token = 0
@@ -559,8 +565,16 @@ class PRMenuApp(App):
 				parts.append(f"[reverse]{part}[/]" if a.key == flashed else part)
 			if ts.config.diff_fetch is not None:
 				parts.append(" [b]d[/b] Toggle diff ")
-			if i == self._active_index() and self._diff_shown():
-				parts.extend([" [b]⇧↑/↓[/b] Scroll ", " [b]⇧⇞/⇟[/b] Page ", " [b]⌥⇞/⇟[/b] Prev/next file "])
+			active = i == self._active_index()
+			pr = self._highlighted_pr(i) if active else None
+			comments = pr is not None and self._comments_toggleable(ts, pr)
+			if comments:
+				label = "Hide comments" if pr["id"] in self._comments_mode_pr_ids else "Show comments"
+				parts.append(f" [b]{self.COMMENTS_KEY}[/b] {label} ")
+			if active and (self._diff_shown() or (comments and pr["id"] in self._comments_mode_pr_ids)):
+				parts.extend([" [b]⇧↑/↓[/b] Scroll ", " [b]⇧⇞/⇟[/b] Page "])
+			if active and self._diff_shown():
+				parts.append(" [b]⌥⇞/⇟[/b] Prev/next file ")
 			parts.extend([" [b]←/→[/b] Switch tab ", " [b]q[/b] Quit "])
 			self.query_one(f"#hotkeys-{i}", Static).update(" ".join(parts))
 
@@ -916,7 +930,11 @@ class PRMenuApp(App):
 		return text
 
 	def _render_preview(self, ts: TabState, pr: dict) -> None:
+		self._render_hotkeys()  # comments key depends on the highlighted row
 		pr_id = pr["id"]
+		if pr_id in self._comments_mode_pr_ids and self._comments_toggleable(ts, pr):
+			self._render_comments(ts, pr)
+			return
 		if pr_id not in self._diff_mode_pr_ids:
 			self._show_diff_mode(False)
 			self._update_status(ts.config.status_bar(pr))
@@ -967,6 +985,66 @@ class PRMenuApp(App):
 		if pr_id in self._diff_mode_pr_ids and self._is_highlighted(pr_id):
 			self._show_diff_mode(False)
 			self._update_status(f"Failed to fetch diff: {error}")
+
+	COMMENTS_KEY = "s"
+
+	def _comments_toggleable(self, ts: TabState, pr: dict) -> bool:
+		return ts.config.comments_fetch is not None and ts.config.has_comments(pr)
+
+	def _render_comments(self, ts: TabState, pr: dict) -> None:
+		self._show_diff_mode(False)
+		self.query_one("#status").border_title = "Preview | Comments"
+		cached = self._comments_cache.get(pr["id"])
+		sig = ts.config.state_signature(pr)
+		if cached and cached[0] == sig:
+			self._update_status(cached[1])
+			return
+		self._update_status("Loading comments...")
+		fetcher = ts.config.comments_fetch
+		pr_id = pr["id"]
+		self.run_worker(
+			lambda: self._fetch_comments_worker(pr_id, sig, pr, fetcher),
+			thread=True,
+			exclusive=True,
+			group=f"comments-{pr_id}",
+		)
+
+	def _fetch_comments_worker(self, pr_id: str, sig: Any, pr: dict, fetcher: Callable[[dict], str]) -> None:
+		try:
+			text = fetcher(pr)
+		except Exception as e:
+			text = f"Failed to fetch comments: {e}"
+		else:
+			self.call_from_thread(self._comments_cache.__setitem__, pr_id, (sig, text))
+		self.call_from_thread(self._on_comments_loaded, pr_id, text)
+
+	def _on_comments_loaded(self, pr_id: str, text: str) -> None:
+		if pr_id in self._comments_mode_pr_ids and self._is_highlighted(pr_id):
+			self._update_status(text)
+
+	def _highlighted_pr(self, i: int) -> dict | None:
+		ts = self._tabs[i]
+		try:
+			table = self.query_one(f"#{ts.table_id}", DataTable)
+		except Exception:
+			return None
+		if not (0 <= table.cursor_row < len(ts.prs)):
+			return None
+		return ts.prs[table.cursor_row]
+
+	def _toggle_comments(self, i: int) -> bool:
+		ts = self._tabs[i]
+		pr = self._highlighted_pr(i)
+		if pr is None or not self._comments_toggleable(ts, pr):
+			return False
+		pr_id = pr["id"]
+		if pr_id in self._comments_mode_pr_ids:
+			self._comments_mode_pr_ids.discard(pr_id)
+		else:
+			self._comments_mode_pr_ids.add(pr_id)
+			self._diff_mode_pr_ids.discard(pr_id)
+		self._render_preview(ts, pr)
+		return True
 
 	def _is_highlighted(self, pr_id: str) -> bool:
 		i = self._active_index()
@@ -1112,6 +1190,7 @@ class PRMenuApp(App):
 			self._diff_mode_pr_ids.discard(pr_id)
 		else:
 			self._diff_mode_pr_ids.add(pr_id)
+			self._comments_mode_pr_ids.discard(pr_id)
 		self._render_preview(ts, pr)
 
 	def _set_breadcrumb(
@@ -1164,6 +1243,9 @@ class PRMenuApp(App):
 
 	def on_key(self, event) -> None:
 		i = self._active_index()
+		if event.key == self.COMMENTS_KEY and self._toggle_comments(i):
+			event.stop()
+			return
 		spec = self._tabs[i].actions_by_key.get(event.key)
 		if spec is None or event.key == "enter" or not spec.shown():
 			return
@@ -1291,6 +1373,8 @@ class PRMenuApp(App):
 		ts.removed_ids.add(pr_id)
 		self._diff_mode_pr_ids.discard(pr_id)
 		self._diff_cache.pop(pr_id, None)
+		self._comments_mode_pr_ids.discard(pr_id)
+		self._comments_cache.pop(pr_id, None)
 		ts.prs = [p for p in ts.prs if p["id"] != pr_id]
 		table = self.query_one(f"#{ts.table_id}", DataTable)
 		try:
