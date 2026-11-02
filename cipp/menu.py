@@ -2,11 +2,11 @@ import argparse
 import os
 import sys
 
-from . import apps, mine, prod, prs, update
+from . import apps, dbs, mine, prod, prs, update
 from .pr_menu import RESTART, run_pr_menu
 
 DEFAULT_UPDATE_INTERVAL = 30
-TAB_NAMES = ["mine", "reviews", "prod", "apps"]  # --tab values, in tab order
+TAB_NAMES = ["mine", "reviews", "prod", "apps", "dbs"]  # --tab values, in tab order
 
 
 def update_interval() -> int:
@@ -27,12 +27,12 @@ def main():
 	parser.add_argument("--tab", choices=TAB_NAMES, default="prod")
 	args = parser.parse_args()
 	tabs = [mine.TAB, prs.TAB, prod.TAB]
-	# Apps tab needs shifterctl; without it the tab is hidden.
+	# Apps / DBs tabs need shifterctl; without it they're hidden.
 	if apps.enabled():
-		tabs.append(apps.TAB)
+		tabs += [apps.TAB, dbs.TAB]
 	initial_tab = TAB_NAMES.index(args.tab)
 	if initial_tab >= len(tabs):
-		parser.error("--tab apps requires shifterctl on PATH")
+		parser.error(f"--tab {args.tab} requires shifterctl on PATH")
 	result = run_pr_menu(
 		tabs,
 		poll_seconds=update_interval(),

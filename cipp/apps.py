@@ -232,30 +232,59 @@ def query(cluster: str, metric: str, promql: str, **login) -> dict:
 	return {ns: sorted(vs) for ns, vs in out.items()}
 
 
-def fetch(notify) -> list[dict]:
-	global _login_failed, _login_requested
-	# Auto-login unless a login already failed; then only `l` retries it (and
-	# opens the browser). Otherwise each refresh would start a new device flow.
-	login = {
-		"allow_login": not _login_failed or _login_requested,
-		"open_browser": _login_requested,
-		"notify": notify,
-	}
-	_login_requested = False
-	try:
-		rows = _fetch(login)
-	except LoginRequired:
-		_login_failed = True
-		raise
-	_login_failed = False
-	return rows
+def login_fetch(fetch_rows):
+	# Tab fetch(notify) around fetch_rows(login), sharing login state across
+	# shifterctl tabs (Apps, DBs).
+	def fetch(notify) -> list[dict]:
+		global _login_failed, _login_requested
+		# Auto-login unless a login already failed; then only `l` retries it (and
+		# opens the browser). Otherwise each refresh would start a new device flow.
+		login = {
+			"allow_login": not _login_failed or _login_requested,
+			"open_browser": _login_requested,
+			"notify": notify,
+		}
+		_login_requested = False
+		try:
+			rows = fetch_rows(login)
+		except LoginRequired:
+			_login_failed = True
+			raise
+		_login_failed = False
+		return rows
+	return fetch
 
 
-def _fetch(login: dict) -> list[dict]:
-	deps = deployments(**login)
+# Serialises login gates across tabs: a second tab's gate waits for the first's
+# login instead of starting a competing device flow.
+_gate_lock = threading.Lock()
+
+
+def run_jobs(jobs: dict, login: dict) -> dict:
+	# key -> zero-arg-ish call (takes **login). First runs alone as the login
+	# gate; the rest fan out on its session with allow_login=False.
+	(first, first_job), *rest = jobs.items()
+	with _gate_lock:
+		results = {first: first_job(**login)}
+	with ThreadPoolExecutor(max_workers=len(rest) or 1) as pool:
+		futures = {k: pool.submit(job) for k, job in rest}
+		results |= {k: f.result() for k, f in futures.items()}
+	return results
+
+
+def gated_deployments(login: dict) -> tuple[list[dict], dict[str, list[str]]]:
+	# deployments() under the login gate (first load may log in), plus
+	# cluster -> namespaces.
+	with _gate_lock:
+		deps = deployments(**login)
 	by_cluster: dict[str, list[str]] = {}
 	for d in deps:
 		by_cluster.setdefault(d["cluster"], []).append(d["namespace"])
+	return deps, by_cluster
+
+
+def _fetch(login: dict) -> list[dict]:
+	deps, by_cluster = gated_deployments(login)
 	def expand(promql, nss):
 		regex = "|".join(nss)
 		return (promql
@@ -275,12 +304,7 @@ def _fetch(login: dict) -> list[dict]:
 			for cluster, nss in by_cluster.items()
 			for metric, promql in QUERIES.items()
 		}
-	# First query runs alone as the login gate; the rest fan out on its session.
-	(first, first_job), *rest = jobs.items()
-	results = {first: first_job(**login)}
-	with ThreadPoolExecutor(max_workers=len(rest) or 1) as pool:
-		futures = {k: pool.submit(job) for k, job in rest}
-		results |= {k: f.result() for k, f in futures.items()}
+	results = run_jobs(jobs, login)
 	if refresh_metrics:
 		_metrics, _metrics_at = {k: v for k, v in results.items() if k[1] != "deploy"}, time.monotonic()
 	rows = [
@@ -292,7 +316,12 @@ def _fetch(login: dict) -> list[dict]:
 		}
 		for d in deps
 	]
+	for r in rows:
+		r["db"] = db_health.get(r["id"])
 	return sorted(rows, key=lambda r: (STAGE_ORDER.get(r["stage"], 9), r["app"]))
+
+
+fetch = login_fetch(_fetch)
 
 
 def deploying(row) -> bool:
@@ -342,52 +371,74 @@ CONCERN_COLUMN = {
 }
 
 
-def concern(row) -> tuple[str, str | None] | None:
-	# (colour, offending column key) when the app's health is a concern, else None.
-	label = health(row)
-	color = CONCERN_COLOR.get(label[0])
-	if color is None:
-		return None
-	return color, CONCERN_COLUMN.get(label[2:])
+class Styling:
+	# Concern colouring + tab badge driven by a tab's health(row) (label prefix
+	# ✗/⚠ = concern) and its label -> offending column map. `deploying` rows get
+	# DEPLOY_COLOR when concern-free.
+	def __init__(self, health, columns: dict[str, str], deploying=lambda row: False):
+		self.health, self.columns, self.deploying = health, columns, deploying
+
+	def concern(self, row) -> tuple[str, str | None] | None:
+		# (colour, offending column key) when health is a concern, else None.
+		label = self.health(row)
+		color = CONCERN_COLOR.get(label[0])
+		if color is None:
+			return None
+		return color, self.columns.get(label[2:])
+
+	def highlight(self, key: str, render):
+		# Column render that paints the cell in the concern colour when it's the
+		# offending metric, or the deploy colour while deploying.
+		def styled(row):
+			c = self.concern(row)
+			if c:
+				return Text(render(row), style=c[0] if c[1] == key else "")
+			return Text(render(row), style=DEPLOY_COLOR if self.deploying(row) else "")
+		return styled
+
+	def concern_styled(self, render):
+		# Render painted in the concern colour whenever the row has one (name,
+		# health), else the deploy colour while deploying.
+		def styled(row):
+			c = self.concern(row)
+			return Text(render(row), style=c[0] if c else DEPLOY_COLOR if self.deploying(row) else "")
+		return styled
+
+	def title_badge(self, rows, fetch_failed) -> Text:
+		# ✅ all fine, ⚠ any prod concern — red if any prod row is ✗, else yellow;
+		# a failed fetch is yellow ⚠ (stale rows can't vouch for health). Prod fine,
+		# test concern: ✅ (Test ⚠︎), coloured by worst test concern. Nothing before
+		# the first load.
+		prod = {self.health(r)[0] for r in rows if r["stage"] != "test"}
+		test = {self.health(r)[0] for r in rows if r["stage"] == "test"}
+		if "✗" in prod:
+			return Text("⚠", style=CONCERN_COLOR["✗"])
+		if fetch_failed or "⚠" in prod:
+			return Text("⚠", style=CONCERN_COLOR["⚠"])
+		if not rows:
+			return Text("")
+		for p in ("✗", "⚠"):
+			if p in test:
+				return Text("✅ ").append("(Test ⚠︎)", style=CONCERN_COLOR[p])
+		return Text("✅")
 
 
-def highlight(key: str, render):
-	# Column render that paints the cell in the concern colour when it's the
-	# offending metric, or the deploy colour while deploying.
-	def styled(row):
-		c = concern(row)
-		if c:
-			return Text(render(row), style=c[0] if c[1] == key else "")
-		return Text(render(row), style=DEPLOY_COLOR if deploying(row) else "")
-	return styled
+STYLING = Styling(health, CONCERN_COLUMN, deploying)
+concern = STYLING.concern
+highlight = STYLING.highlight
+concern_styled = STYLING.concern_styled
 
 
-def concern_styled(render):
-	# Render painted in the concern colour whenever the app has one (app name,
-	# health), else the deploy colour while deploying.
-	def styled(row):
-		c = concern(row)
-		return Text(render(row), style=c[0] if c else DEPLOY_COLOR if deploying(row) else "")
-	return styled
+# Row id -> its DB's health label, set by the DBs tab's fetch (`dbs.py`); the
+# Apps `DB` marker column reads it. Absent = app has no DB (or not loaded yet).
+db_health: dict[str, str] = {}
 
 
-def title_badge(rows, fetch_failed) -> Text:
-	# ✅ all fine, ⚠ any prod concern — red if any prod app is down, else yellow;
-	# a failed fetch is yellow ⚠ (stale rows can't vouch for health). Prod fine,
-	# test concern: ✅ (Test ⚠︎), coloured by worst test concern. Nothing before
-	# the first load.
-	prod = {health(r)[0] for r in rows if r["stage"] != "test"}
-	test = {health(r)[0] for r in rows if r["stage"] == "test"}
-	if "✗" in prod:
-		return Text("⚠", style=CONCERN_COLOR["✗"])
-	if fetch_failed or "⚠" in prod:
-		return Text("⚠", style=CONCERN_COLOR["⚠"])
-	if not rows:
+def db_marker(row) -> Text:
+	label = row.get("db")
+	if label is None:
 		return Text("")
-	for p in ("✗", "⚠"):
-		if p in test:
-			return Text("✅ ").append("(Test ⚠︎)", style=CONCERN_COLOR[p])
-	return Text("✅")
+	return Text(label[0], style=CONCERN_COLOR.get(label[0], ""))
 
 
 def pct(v) -> str:
@@ -451,7 +502,7 @@ def preview(row) -> str:
 - **CPU** {pct(row['cpu'])} · **memory** {pct(row['mem'])} (worst pod vs limit)
 - **Traffic (5m)** {rps(row)} · **5xx** {pct(row['err'])} · **p95** {p95(row)}
 - **Deployed** {deployed(row)} ago · **image** {images}
-"""
+""" + (f"- **DB** {row['db']} (see DBs tab)\n" if row.get("db") else "")
 
 
 TAB = TabConfig(
@@ -489,7 +540,7 @@ TAB = TabConfig(
 	# Flag the inactive tab title only when an app's health changes, not on
 	# every metric wiggle.
 	state_signature=health,
-	title_badge=title_badge,
+	title_badge=STYLING.title_badge,
 	show_header=True,
 	status_label="Health",
 	preview_title="Details",
@@ -504,5 +555,7 @@ TAB = TabConfig(
 		ColumnSpec(key="err", label="5xx", width=5, render=highlight("err", lambda r: pct(r["err"]))),
 		ColumnSpec(key="p95", label="p95", width=6, render=highlight("p95", p95)),
 		ColumnSpec(key="deployed", label="Deployed", width=8, render=highlight("deployed", deployed)),
+		# DB health glyph (✓ / ⚠ / ✗) for apps with a DB; details in the DBs tab.
+		ColumnSpec(key="db", label="DB", width=2, render=db_marker),
 	],
 )
