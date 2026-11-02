@@ -191,18 +191,19 @@ TAB = TabConfig(
 	title_badge=STYLING.title_badge,
 	show_header=True,
 	status_label="Health",
+	status_width=13,  # longest health label + slack; widens the name column
 	preview_title="Details",
 	pane_ratio=(3, 2),
 	columns=[
 		ColumnSpec(key="stage", label="Env", width=4, render=h("stage", lambda r: r["stage"])),
-		ColumnSpec(key="conns", label="Conns", width=9, render=h("conns", conns)),
+		ColumnSpec(key="conns", label="Conns", width=7, render=h("conns", conns)),
 		ColumnSpec(key="cpu", label="CPU", width=4, render=h("cpu", lambda r: pct(r["cpu"]))),
 		ColumnSpec(key="mem", label="FreeMem", width=7, render=h("mem", lambda r: size(r["free_mem"]))),
 		ColumnSpec(key="disk", label="FreeDisk", width=8, render=h("disk", lambda r: size(r["free_disk"]))),
 		ColumnSpec(key="size", label="Size", width=5, render=h("size", lambda r: size(r["size"]))),
 		ColumnSpec(key="tps", label="TPS", width=4, render=h("tps", lambda r: num(r["tps"]))),
 		ColumnSpec(key="cache", label="Cache", width=5, render=h("cache", lambda r: pct(r["cache"]))),
-		ColumnSpec(key="tx", label="LongTx", width=6, render=h("tx", lambda r: seconds(r["long_tx"]))),
+		ColumnSpec(key="tx", label="Tx", width=4, render=h("tx", lambda r: seconds(r["long_tx"]))),
 		ColumnSpec(key="queue", label="Queue", width=5, render=h("queue", lambda r: num(r["queue"]))),
 	],
 )

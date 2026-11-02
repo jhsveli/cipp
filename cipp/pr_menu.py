@@ -127,6 +127,7 @@ class TabConfig:
 	# Column headers; `status_label` heads the right-hand status/idle column.
 	show_header: bool = False
 	status_label: str = "Status"
+	status_width: int = 20  # right-hand status column; fits Acting/Finishing labels
 	# Bottom pane title (non-diff) and table:preview height ratio (fr).
 	preview_title: str = "Preview | Body"
 	pane_ratio: tuple[int, int] = (2, 3)
@@ -302,7 +303,7 @@ class PRMenuApp(App):
 				width = col.width + 2 if j == 0 and col.width is not None else col.width
 				table.add_column(col.label, key=col.key, width=width)
 			table.add_column(ts.config.noun.capitalize(), key="pr", width=10)
-			table.add_column(ts.config.status_label, key="status", width=20)
+			table.add_column(ts.config.status_label, key="status", width=ts.config.status_width)
 		self._refresh_all()
 		for i, ts in enumerate(self._tabs):
 			if ts.config.fetch is not None:
