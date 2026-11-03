@@ -204,6 +204,8 @@ TAB = TabConfig(
 		ColumnSpec(key="tps", label="TPS", width=4, render=h("tps", lambda r: num(r["tps"]))),
 		ColumnSpec(key="cache", label="Cache", width=5, render=h("cache", lambda r: pct(r["cache"]))),
 		ColumnSpec(key="tx", label="Tx", width=4, render=h("tx", lambda r: seconds(r["long_tx"]))),
+		# CloudWatch max over its period (~5m); YACE has ≤1 sample/15m, so no PromQL avg.
+		ColumnSpec(key="wiops", label="WIOPS", width=5, render=h("wiops", lambda r: num(r["write_iops"]))),
 		ColumnSpec(key="queue", label="Queue", width=5, render=h("queue", lambda r: num(r["queue"]))),
 	],
 )
