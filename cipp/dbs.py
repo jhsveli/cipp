@@ -40,6 +40,10 @@ QUERIES = {
 }
 # Instance id label value (namespace -> RDS instance id), for the details pane.
 INSTANCE_QUERY = 'count by (namespace, dimension_DBInstanceIdentifier) (aws_rds_cpuutilization_maximum{$NS})'
+# Who holds the longest tx (details only; e.g. import jobs). `max by` drops pod (replicas).
+LONG_TX_LABELS = ("state", "application_name", "usename", "wait_event")
+LONG_TX_QUERY = (f'topk by (namespace) (1, max by (namespace, {", ".join(LONG_TX_LABELS)})'
+	' (pg_stat_activity_max_tx_duration{$NS} > 0))')
 
 CONNS_WARN = 0.8  # of max_connections
 CPU_WARN = 0.9
@@ -65,6 +69,12 @@ def _fetch(login: dict) -> list[dict]:
 		})
 		for cluster, nss in by_cluster.items()
 	}
+	jobs |= {
+		(cluster, "long_tx"): (lambda c=cluster, q=expand(LONG_TX_QUERY, nss), **kw: {
+			s["Labels"]["namespace"]: s["Labels"] for s in apps._series(c, q, **kw)
+		})
+		for cluster, nss in by_cluster.items()
+	}
 	results = apps.run_jobs(jobs, login)
 	rows = []
 	for d in deps:
@@ -73,7 +83,8 @@ def _fetch(login: dict) -> list[dict]:
 		# Apps without a DB have no series at all: not a row.
 		if instance is None and all(v is None for v in metrics.values()):
 			continue
-		rows.append({**d, "id": f"{d['app']}@{d['cluster']}", "instance": instance, **metrics})
+		long_tx_info = results[(d["cluster"], "long_tx")].get(d["namespace"])
+		rows.append({**d, "id": f"{d['app']}@{d['cluster']}", "instance": instance, "long_tx_info": long_tx_info, **metrics})
 	apps.db_health = {r["id"]: health(r) for r in rows}
 	return sorted(rows, key=lambda r: (STAGE_ORDER.get(r["stage"], 9), r["app"]))
 
@@ -142,12 +153,18 @@ def seconds(v) -> str:
 	return f"{v:.0f}s" if v < 60 else f"{v / 60:.0f}m" if v < 3600 else f"{v / 3600:.1f}h"
 
 
+def long_tx_who(row) -> str:
+	info = row.get("long_tx_info") or {}
+	parts = [info[k] if k != "wait_event" else f"wait {info[k]}" for k in LONG_TX_LABELS if info.get(k)]
+	return f" ({' · '.join(parts)})" if parts else ""
+
+
 def preview(row) -> str:
 	ratio = conns_ratio(row)
 	return f"""**{row['app']}** · {row['stage']} (`{row['cluster']}`, ns `{row['namespace']}`) · {health(row)}
 
 - **Instance** `{row['instance'] or '–'}` · **exporter** {'up' if row['up'] else 'down' if row['up'] == 0 else '–'}
-- **Connections** {conns(row)} ({pct(ratio)}) · **idle in tx** {count(row['idle_tx'])} · **longest tx** {seconds(row['long_tx'])}
+- **Connections** {conns(row)} ({pct(ratio)}) · **idle in tx** {count(row['idle_tx'])} · **longest tx** {seconds(row['long_tx'])}{long_tx_who(row)}
 - **TPS (5m)** {num(row['tps'])} · **cache hit** {pct(row['cache'])} · **deadlocks (1h)** {count(row['deadlocks'])}
 - **CPU** {pct(row['cpu'])} · **freeable mem** {size(row['free_mem'])}B · **swap** {size(row['swap'])}B · **CPU credits** {num(row['credits'])}
 - **Free disk** {size(row['free_disk'])}B · **DB size** {size(row['size'])}B · **dead tuples** {size(row['dead_tup'])}
