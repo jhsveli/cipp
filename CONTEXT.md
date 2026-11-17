@@ -56,6 +56,8 @@ A failing handler keeps the row in a [[Failed]] state + shows the error in the [
 
 *Merge* / *Approve + merge* go through `cmd.merge_pr(repo, number)`: it tries a **rebase** merge (`-r`), falling back to **squash** (`-s`) if the repo disallows rebase. Repos vary in permitted methods (some allow only rebase, others only squash), so trying-then-falling-back covers both without an extra capabilities query.
 
+Merges are serialised **per repo** (`cmd._merge_lock`): parallel merges into one base race ("Base branch was modified"), so e.g. several *Production* merges queue behind each other while approvals still run in parallel. Different repos merge concurrently. Doesn't cover merges by others/bots — the retry still handles those.
+
 A *tab-level* action (`ActionSpec.tab_level`) fires without a row, even on an empty table: handler gets `None`, runs on the UI thread (must be instant), and may return `ActionResult.REFRESH` to refetch a [[Standalone tab]] now. `ActionSpec.visible` hides an action (legend + key) until relevant.
 
 An action with `ActionSpec.breadcrumb` set (a `pr -> str`) is a *breadcrumb action*: it skips the [[PR-status]] column entirely (no [[Acting]] spinner / [[Finishing]] ✓) and instead flashes its message in the [[App status]] breadcrumb, auto-fading after 3s. For instant ops where a per-row indicator is noise — e.g. *My PRs* `c` Copy URL and `o` Open in browser. The fade is token-guarded (`_breadcrumb_token`) so a newer breadcrumb is never wiped by an older flash's timer.

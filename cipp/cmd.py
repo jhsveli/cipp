@@ -1,7 +1,17 @@
 import os
 import json
 import subprocess
+import threading
 import time
+
+# Per-repo merge lock: parallel merges into one base race ("Base branch was
+# modified"), so merges to same repo run one at a time.
+_merge_locks = {}
+_merge_locks_guard = threading.Lock()
+
+def _merge_lock(repo):
+	with _merge_locks_guard:
+		return _merge_locks.setdefault(repo, threading.Lock())
 
 def exec_json(cmd):
 	string = exec(cmd)
@@ -20,6 +30,10 @@ def exec(cmd, check=True):
 	return result.stdout
 
 def merge_pr(repo, number):
+	with _merge_lock(repo):
+		return _merge_pr(repo, number)
+
+def _merge_pr(repo, number):
 	# Prefer a rebase merge; fall back to squash if the repo disallows rebase.
 	# Repos vary in which methods they permit (e.g. some allow only rebase, others
 	# only squash), so trying one and falling back covers both without querying.
