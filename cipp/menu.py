@@ -2,11 +2,24 @@ import argparse
 import os
 import sys
 
-from . import apps, dbs, mine, prod, prs, update
+from . import apps, claude, dbs, mine, prod, prs, update
 from .pr_menu import RESTART, run_pr_menu
 
 DEFAULT_UPDATE_INTERVAL = 30
-TAB_NAMES = ["mine", "reviews", "prod", "apps", "dbs"]  # --tab values, in tab order
+# --tab name -> (tab, enabled), in tab order. Disabled tabs are hidden.
+def all_tabs():
+	return [
+		("mine", mine.TAB, True),
+		("reviews", prs.TAB, True),
+		("prod", prod.TAB, True),
+		# Apps / DBs need shifterctl.
+		("apps", apps.TAB, apps.enabled()),
+		("dbs", dbs.TAB, apps.enabled()),
+		("claude", claude.TAB, claude.enabled()),
+	]
+
+
+TAB_NAMES = ["mine", "reviews", "prod", "apps", "dbs", "claude"]
 
 
 def update_interval() -> int:
@@ -26,13 +39,12 @@ def main():
 	parser = argparse.ArgumentParser(prog="cipp")
 	parser.add_argument("--tab", choices=TAB_NAMES, default="prod")
 	args = parser.parse_args()
-	tabs = [mine.TAB, prs.TAB, prod.TAB]
-	# Apps / DBs tabs need shifterctl; without it they're hidden.
-	if apps.enabled():
-		tabs += [apps.TAB, dbs.TAB]
-	initial_tab = TAB_NAMES.index(args.tab)
-	if initial_tab >= len(tabs):
-		parser.error(f"--tab {args.tab} requires shifterctl on PATH")
+	present = [(name, tab) for name, tab, on in all_tabs() if on]
+	names = [name for name, _ in present]
+	tabs = [tab for _, tab in present]
+	if args.tab not in names:
+		parser.error(f"--tab {args.tab} unavailable (apps/dbs need shifterctl, claude needs ~/.claude/sessions)")
+	initial_tab = names.index(args.tab)
 	result = run_pr_menu(
 		tabs,
 		poll_seconds=update_interval(),
@@ -43,7 +55,7 @@ def main():
 	if isinstance(result, tuple) and result[0] == RESTART:
 		# Re-exec into the freshly installed code, back on the same tab (last
 		# --tab wins).
-		argv = [sys.executable, "-m", "cipp.menu", *sys.argv[1:], "--tab", TAB_NAMES[result[1]]]
+		argv = [sys.executable, "-m", "cipp.menu", *sys.argv[1:], "--tab", names[result[1]]]
 		os.execv(sys.executable, argv)
 
 
