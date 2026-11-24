@@ -14,8 +14,26 @@ CHECK_EMOJI = {
 }
 
 
+# Reviewed-only PRs (request gone) stay until approved; bot PRs stay
+# approved too, as long as unmerged (someone must still merge them).
 def post_process(prs):
-	return prs
+	return [pr for pr in prs if pr['requested'] or not pr['approved'] or is_bot(pr)]
+
+
+def is_bot(pr) -> bool:
+	return resolve_author(pr['author'], is_bot=pr['isBot'])[1]
+
+
+def has_conflicts(pr) -> bool:
+	return pr.get('mergeable') == 'CONFLICTING'
+
+
+def merge_block(pr):
+	if build_failing(pr):
+		return "Build failing — cannot merge"
+	if has_conflicts(pr):
+		return "Conflicts with base branch — cannot merge"
+	return None
 
 
 # A failed status-check rollup blocks merging (hard block, not a confirm).
@@ -45,8 +63,10 @@ def fetch_diff(pr):
 
 
 def author_label(pr):
-	name, is_bot = resolve_author(pr['author'], is_bot=pr['isBot'])
-	emoji = '🤖' if is_bot else '🧠'
+	if has_conflicts(pr):
+		return "💥 Conflicts"
+	name, bot = resolve_author(pr['author'], is_bot=pr['isBot'])
+	emoji = '✅' if pr['approved'] else '🤖' if bot else '🧠'
 	return f"{emoji} {name}"
 
 
@@ -74,6 +94,7 @@ NODE_SELECTION = """
             __typename
           }
           reviewDecision
+          mergeable
           latestOpinionatedReviews(last: 20) {
             nodes { state author { login } }
           }
@@ -91,12 +112,14 @@ NODE_SELECTION = """
 
 JQ_PROJECTION = """
 .data.viewer.login as $me
-| ([.data.reviews.edges[].node]
-   + [.data.reviewed.edges[].node
-      | select(.reviewDecision != "APPROVED")
-      | select(any(.latestOpinionatedReviews.nodes[]; .author.login == $me and .state == "APPROVED") | not)])
-| unique_by(.id) | sort_by(.createdAt) | reverse
+| ([.data.reviews.edges[].node | .requested = true]
+   + [.data.reviewed.edges[].node | .requested = false])
+| group_by(.id) | map(max_by(.requested)) | sort_by(.createdAt) | reverse
 | [.[] | {
+   requested: .requested,
+   approved: (.reviewDecision == "APPROVED"
+     or any(.latestOpinionatedReviews.nodes[]; .author.login == $me and .state == "APPROVED")),
+   mergeable: .mergeable,
    id: .id,
    number: .number,
    state: .state,
@@ -125,7 +148,7 @@ TAB = TabConfig(
 			key="m",
 			label="Approve + merge",
 			handler=approve_and_merge,
-			block=lambda pr: "Build failing — cannot merge" if build_failing(pr) else None,
+			block=merge_block,
 			safeguard=Safeguard(
 				when=lambda pr: pr["checkStatus"] != "SUCCESS",
 				descriptor="non-green",
@@ -157,5 +180,5 @@ TAB = TabConfig(
 	pr_label=lambda pr: pr['title'],
 	idle_label=author_label,
 	diff_fetch=fetch_diff,
-	state_signature=lambda pr: pr['checkStatus'],
+	state_signature=lambda pr: (pr['checkStatus'], pr['approved'], has_conflicts(pr)),
 )
