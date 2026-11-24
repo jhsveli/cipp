@@ -1,3 +1,6 @@
+import re
+import unicodedata
+
 from . import slack
 from .abbreviate import short_repo
 from .cmd import exec, exec_input, exec_json, merge_pr
@@ -132,17 +135,51 @@ def fetch_comments(pr) -> str:
 	return '\n\n---\n\n'.join(sections) or 'No comments.'
 
 
-# Merging needs a confirm when the PR is unapproved *or* carries discussion —
+# Comment content that carries no objection: images / GIFs, emoji, :shortcodes:.
+_NOISE = [
+	re.compile(r"!\[[^\]]*\]\([^)]*\)"),  # markdown image (GIFs too)
+	re.compile(r"<img\b[^>]*>", re.I),
+	re.compile(r"https?://\S+\.(?:gif|png|jpe?g|webp)\S*|https?://\S*(?:giphy|tenor)\.com\S*", re.I),
+	re.compile(r":[a-z0-9_+-]+:"),  # :+1: :tada:
+]
+TRIVIAL = {"", "lgtm", "looks good", "looks good to me", "ship it", "+1", "nice"}
+
+
+def trivial_comment(body: str) -> bool:
+	text = body or ""
+	for rx in _NOISE:
+		text = rx.sub(" ", text)
+	# Drop emoji (So/Sk), modifiers / ZWJ / variation selectors (Mn/Cf/Me).
+	text = "".join(ch for ch in text if unicodedata.category(ch) not in ("So", "Sk", "Mn", "Me", "Cf"))
+	text = " ".join(text.casefold().split()).strip(" .!")
+	return text in TRIVIAL
+
+
+def concerns(pr) -> int:
+	# Comments by others that may hold an objection: in unresolved review
+	# threads, or top-level (those can't be resolved). Trivial ones (LGTM,
+	# emoji, GIF) and my own don't count.
+	me = pr.get('me')
+	def objection(c):
+		return c['author'] != me and not trivial_comment(c['body'])
+	threads = sum(
+		any(objection(c) for c in t['comments'])
+		for t in pr.get('threads') or [] if not t['resolved']
+	)
+	return threads + sum(objection(c) for c in pr.get('comments') or [])
+
+
+# Merging needs a confirm when the PR is unapproved *or* has open concerns —
 # comments can hold objections that no review state reflects (an approval can
-# predate them), so an approved-but-commented-on PR is gated too.
+# predate them), so an approved PR with an open concern is gated too.
 def merge_needs_confirm(pr) -> bool:
-	return review_state(pr) != 'APPROVED' or bool(pr.get('commentCount'))
+	return review_state(pr) != 'APPROVED' or concerns(pr) > 0
 
 
 def merge_descriptor(pr) -> str:
 	state = review_state(pr)
 	unapproved = 'partly approved' if state == 'PARTIAL' else 'unapproved' if state != 'APPROVED' else None
-	if unapproved and pr.get('commentCount'):
+	if unapproved and concerns(pr):
 		return f'{unapproved}, commented-on'
 	return unapproved or 'commented-on'
 
@@ -186,8 +223,17 @@ NODE_SELECTION = """
               }
             }
           }
-          comments { totalCount }
-          reviewThreads { totalCount }
+          comments(last: 30) {
+            totalCount
+            nodes { body author { login } }
+          }
+          reviewThreads(first: 30) {
+            totalCount
+            nodes {
+              isResolved
+              comments(first: 10) { nodes { body author { login } } }
+            }
+          }
           latestOpinionatedReviews(last: 20) {
             nodes {
               state
@@ -210,7 +256,11 @@ NODE_SELECTION = """
 """
 
 JQ_PROJECTION = """
-[.data.created.edges[].node | {
+.data.viewer.login as $me
+| [.data.created.edges[].node | {
+   me: $me,
+   comments: [.comments.nodes[] | {body, author: .author.login}],
+   threads: [.reviewThreads.nodes[] | {resolved: .isResolved, comments: [.comments.nodes[] | {body, author: .author.login}]}],
    id: .id,
    url: .url,
    number: .number,
@@ -293,5 +343,5 @@ TAB = TabConfig(
 	diff_fetch=fetch_diff,
 	comments_fetch=fetch_comments,
 	has_comments=lambda pr: bool(pr.get('commentCount')),
-	state_signature=lambda pr: (pr['checkStatus'], review_state(pr), pr.get('isDraft'), pr.get('commentCount'), has_conflicts(pr), tuple(pr.get('pendingOwners') or ())),
+	state_signature=lambda pr: (pr['checkStatus'], review_state(pr), pr.get('isDraft'), pr.get('commentCount'), concerns(pr), has_conflicts(pr), tuple(pr.get('pendingOwners') or ())),
 )
