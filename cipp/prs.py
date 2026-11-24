@@ -46,6 +46,16 @@ def build_failing(pr) -> bool:
 
 
 MONOREPO = "awl-monorepo"
+# Changed files, for display_repo; shared with the Created tab.
+FILES_SELECTION = """
+          files(first: 100) {
+            nodes { path }
+            pageInfo { hasNextPage }
+          }
+"""
+FILES_PROJECTION = """
+   files: [.files.nodes[]?.path],
+   filesTruncated: (.files.pageInfo.hasNextPage // false),"""
 GROUP_DIRS = {"internal-apps"}  # + team-*: apps/<group>/<app>/…
 
 
@@ -121,10 +131,7 @@ NODE_SELECTION = """
           }
           reviewDecision
           mergeable
-          files(first: 100) {
-            nodes { path }
-            pageInfo { hasNextPage }
-          }
+""" + FILES_SELECTION + """
           latestOpinionatedReviews(last: 20) {
             nodes { state author { login } }
           }
@@ -149,9 +156,7 @@ JQ_PROJECTION = """
    requested: .requested,
    approved: (.reviewDecision == "APPROVED"
      or any(.latestOpinionatedReviews.nodes[]; .author.login == $me and .state == "APPROVED")),
-   mergeable: .mergeable,
-   files: [.files.nodes[]?.path],
-   filesTruncated: (.files.pageInfo.hasNextPage // false),
+   mergeable: .mergeable,""" + FILES_PROJECTION + """
    id: .id,
    number: .number,
    state: .state,

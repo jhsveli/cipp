@@ -1,7 +1,7 @@
 from . import slack
 from .abbreviate import short_repo
 from .cmd import exec, exec_input, exec_json, merge_pr
-from .prs import CHECK_RANK
+from .prs import CHECK_RANK, FILES_PROJECTION, FILES_SELECTION, display_repo
 from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, age_key, format_age
 
 CHECK_EMOJI = {
@@ -176,6 +176,7 @@ NODE_SELECTION = """
           isDraft
           mergeable
           reviewDecision
+""" + FILES_SELECTION + """
           reviewRequests(first: 20) {
             nodes {
               asCodeOwner
@@ -215,7 +216,7 @@ JQ_PROJECTION = """
    number: .number,
    state: .state,
    isDraft: .isDraft,
-   mergeable: .mergeable,
+   mergeable: .mergeable,""" + FILES_PROJECTION + """
    reviewDecision: .reviewDecision,
    pendingOwners: [.reviewRequests.nodes[] | select(.asCodeOwner) | .requestedReviewer | (.slug // .login)],
    commentCount: (.comments.totalCount + .reviewThreads.totalCount),
@@ -276,8 +277,8 @@ TAB = TabConfig(
 			key="ref",
 			label="Ref",
 			width=None,
-			render=lambda pr: f"{short_repo(pr['repository']['name'])}#{pr['number']}",
-			sort_key=lambda pr: (short_repo(pr['repository']['name']), pr['number']),
+			render=lambda pr: f"{short_repo(display_repo(pr))}#{pr['number']}",
+			sort_key=lambda pr: (short_repo(display_repo(pr)), pr['number']),
 		),
 		ColumnSpec(
 			key="age",
