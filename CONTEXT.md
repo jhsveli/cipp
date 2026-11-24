@@ -49,6 +49,8 @@ All tabs share **one** GraphQL request per refresh cycle, not one-per-tab. `PRMe
 
 The *Reviews* and *Production* tabs are not disjoint by construction — *Reviews* pulls every open PR with `review-requested:@me` across all repos. Image-updater prod PRs are kept out by **author** (`-author:app/aws-plattform-image-updater` — the `app/` prefix is required because the bot is a GitHub App; without it the author does not resolve and the unresolvable `-author:` qualifier zeroes the entire result set), not by repo or label alone: the `image-updater` label is applied asynchronously after creation, so a label-only filter left a ~0–30s window where prod PRs flashed in *Reviews*; the author is fixed at creation, closing the window. Excluding the whole configrepo would be too coarse — human-authored PRs there can still legitimately require review, so they must stay in *Reviews*.
 
+*Reviews* also unions an `extra_search` `reviewed-by:@me -author:@me` block: GitHub clears the review request on **any** submitted review (incl. `COMMENTED`), so a commented-on PR fell out of `review-requested:@me`. Reviewed-only PRs stay until approved — dropped when `reviewDecision == APPROVED` or my latest opinionated review is `APPROVED`. Merged `unique_by(.id)`, newest first.
+
 ### Action
 A keystroke-bound operation on a single PR — *Approve*, *Approve + merge*, *Open in browser*. Modeled by `ActionSpec`. Returns `ActionResult.REMOVE` (the PR should leave the list) or `ActionResult.KEEP` (the PR stays).
 

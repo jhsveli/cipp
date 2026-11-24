@@ -50,7 +50,11 @@ def author_label(pr):
 	return f"{emoji} {name}"
 
 
-SEARCH_QUERY = "type:pr state:open review-requested:@me -label:image-updater -author:app/aws-plattform-image-updater sort:created-desc"
+FILTERS = "type:pr state:open -label:image-updater -author:app/aws-plattform-image-updater sort:created-desc"
+SEARCH_QUERY = f"review-requested:@me {FILTERS}"
+# GitHub drops the review request on any submitted review (also COMMENTED),
+# so PRs I've reviewed come from a 2nd search, kept until approved.
+EXTRA_SEARCH = {"reviewed": f"reviewed-by:@me -author:@me {FILTERS}"}
 
 NODE_SELECTION = """
           url
@@ -69,6 +73,10 @@ NODE_SELECTION = """
             login
             __typename
           }
+          reviewDecision
+          latestOpinionatedReviews(last: 20) {
+            nodes { state author { login } }
+          }
           commits(last: 1) {
             nodes {
               commit {
@@ -82,7 +90,13 @@ NODE_SELECTION = """
 """
 
 JQ_PROJECTION = """
-[.data.reviews.edges[].node | {
+.data.viewer.login as $me
+| ([.data.reviews.edges[].node]
+   + [.data.reviewed.edges[].node
+      | select(.reviewDecision != "APPROVED")
+      | select(any(.latestOpinionatedReviews.nodes[]; .author.login == $me and .state == "APPROVED") | not)])
+| unique_by(.id) | sort_by(.createdAt) | reverse
+| [.[] | {
    id: .id,
    number: .number,
    state: .state,
@@ -101,6 +115,7 @@ TAB = TabConfig(
 	title="Open PRs awaiting review",
 	alias="reviews",
 	search_query=SEARCH_QUERY,
+	extra_search=EXTRA_SEARCH,
 	node_selection=NODE_SELECTION,
 	jq_projection=JQ_PROJECTION,
 	post_process=post_process,
