@@ -72,12 +72,31 @@ def format_age(created_at: str) -> str:
 	return f"{hours // 24}d"
 
 
+def age_key(created_at: str) -> float:
+	# Sort key for age columns: ascending = youngest first.
+	return -datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+
+
+def plain(value) -> str:
+	return value.plain if isinstance(value, Text) else str(value)
+
+
+def text_key(render: Callable[[dict], Any]) -> Callable[[dict], Any]:
+	# Default sort key: rendered text; blank / "–" = no value (sorted last).
+	def key(row):
+		text = plain(render(row)).strip()
+		return None if text in ("", "–") else text.casefold()
+	return key
+
+
 @dataclass
 class ColumnSpec:
 	key: str
 	label: str
 	width: int | None
 	render: Callable[[dict], Any]
+	# Sort mode key (None = no value, always last); default: rendered text.
+	sort_key: Callable[[dict], Any] | None = None
 
 
 @dataclass
@@ -135,6 +154,10 @@ class TabConfig:
 	animated: Callable[[dict], bool] = lambda pr: False
 
 
+def noun_label(cfg: TabConfig) -> str:
+	return cfg.noun if cfg.noun.isupper() else cfg.noun.capitalize()  # "PR", not "Pr"
+
+
 @dataclass
 class TabState:
 	config: TabConfig
@@ -153,6 +176,16 @@ class TabState:
 	loading: bool = False
 	seconds_until_refresh: int = 0
 	fetch_failed: bool = False
+	# Session-only column sort (column key, descending); None = post_process order.
+	sort: tuple[str, bool] | None = None
+	source_prs: list[dict] = field(default_factory=list)  # last fetch, unsorted
+
+
+@dataclass
+class SortMode:
+	tab: int
+	column: int  # index into _sort_columns
+	previous: tuple[str, bool] | None  # restored on esc
 
 
 RESTART = "restart"
@@ -254,6 +287,7 @@ class PRMenuApp(App):
 		self._action_flash_token = 0
 		self._confirm_token = 0  # guards the per-arm 3s confirm timeout
 		self._filelist_token = 0  # guards the file-list overlay's auto-hide timer
+		self._sort_mode: SortMode | None = None
 		self._tabs: list[TabState] = [
 			TabState(
 				config=cfg,
@@ -302,7 +336,7 @@ class PRMenuApp(App):
 				# First column carries the unseen "● " marker, so reserve 2 extra cells.
 				width = col.width + 2 if j == 0 and col.width is not None else col.width
 				table.add_column(col.label, key=col.key, width=width)
-			table.add_column(ts.config.noun.capitalize(), key="pr", width=10)
+			table.add_column(noun_label(ts.config), key="pr", width=10)
 			table.add_column(ts.config.status_label, key="status", width=ts.config.status_width)
 		self._refresh_all()
 		for i, ts in enumerate(self._tabs):
@@ -466,6 +500,9 @@ class PRMenuApp(App):
 			text = f"{count}{spinner()} Updating"
 		else:
 			text = f"{count}Updating in {seconds}s…"
+		if ts.sort is not None:
+			label = dict(self._sort_columns(ts))[ts.sort[0]]
+			text = f"{text} · sort: {label} {'▼' if ts.sort[1] else '▲'}"
 		countdown = self.query_one("#countdown", Static)
 		countdown.update(text)
 		countdown.set_class(loading, "running")
@@ -556,6 +593,12 @@ class PRMenuApp(App):
 	def _render_hotkeys(self) -> None:
 		key_label = {"enter": "↵", "escape": "esc"}
 		for i, ts in enumerate(self._tabs):
+			if self._sort_mode is not None and self._sort_mode.tab == i:
+				self.query_one(f"#hotkeys-{i}", Static).update(" ".join([
+					" [b]←/→[/b] Column ", " [b]↑/↓[/b] Asc/desc ", " [b]0[/b] Default ",
+					" [b]↵[/b] Keep ", " [b]esc[/b] Cancel ",
+				]))
+				continue
 			flashed = self._flashed_action[1] if self._flashed_action and self._flashed_action[0] == i else None
 			parts = []
 			for a in ts.config.actions:
@@ -576,7 +619,7 @@ class PRMenuApp(App):
 				parts.extend([" [b]⇧↑/↓[/b] Scroll ", " [b]⇧⇞/⇟[/b] Page "])
 			if active and self._diff_shown():
 				parts.append(" [b]⌥⇞/⇟[/b] Prev/next file ")
-			parts.extend([" [b]←/→[/b] Switch tab ", " [b]q[/b] Quit "])
+			parts.extend([" [b]S[/b] Sort ", " [b]←/→[/b] Switch tab ", " [b]q[/b] Quit "])
 			self.query_one(f"#hotkeys-{i}", Static).update(" ".join(parts))
 
 	def _flash_action(self, i: int, key: str, seconds: float = 0.4) -> None:
@@ -723,9 +766,10 @@ class PRMenuApp(App):
 
 	def _apply_prs(self, i: int, prs: list[dict]) -> None:
 		ts = self._tabs[i]
+		ts.source_prs = prs
 		if ts.acting_pr_ids or ts.finishing_pr_ids:
 			return
-		visible = [pr for pr in prs if pr["id"] not in ts.removed_ids]
+		visible = self._sorted(ts, [pr for pr in prs if pr["id"] not in ts.removed_ids])
 		old_ids = {pr["id"] for pr in ts.prs}
 		new_ids = {pr["id"] for pr in visible}
 		# A fetch is fresh truth from GitHub, so any prior failure marker is stale.
@@ -1240,7 +1284,101 @@ class PRMenuApp(App):
 			and event.key not in self._JUMP_FILE_KEYS
 		):
 			self._hide_filelist()
+		# Sort mode owns the keyboard (←/→ etc. are priority-bound to tabs).
+		if isinstance(event, events.Key) and self._sort_mode is not None:
+			event.stop()
+			event.prevent_default()
+			self._sort_mode_key(event.key)
+			return
+		if isinstance(event, events.Key) and event.key in self.SORT_KEYS:
+			event.stop()
+			event.prevent_default()
+			self._enter_sort_mode()
+			return
 		await super().on_event(event)
+
+	SORT_KEYS = frozenset({"S", "shift+s"})
+
+	def _sort_columns(self, ts: TabState) -> list[tuple[str, str]]:
+		# (column key, header label) in display order.
+		cfg = ts.config
+		return [(c.key, c.label) for c in cfg.columns] + [
+			("pr", noun_label(cfg)), ("status", cfg.status_label)
+		]
+
+	def _sort_key_fn(self, ts: TabState, key: str) -> Callable[[dict], Any]:
+		cfg = ts.config
+		if key == "pr":
+			return text_key(cfg.pr_label)
+		if key == "status":
+			return text_key(cfg.idle_label)
+		col = next(c for c in cfg.columns if c.key == key)
+		return col.sort_key or text_key(col.render)
+
+	def _sorted(self, ts: TabState, prs: list[dict]) -> list[dict]:
+		if ts.sort is None:
+			return prs
+		key, desc = ts.sort
+		fn = self._sort_key_fn(ts, key)
+		keyed = [(fn(pr), pr) for pr in prs]
+		have = [kp for kp in keyed if kp[0] is not None]
+		try:
+			have.sort(key=lambda kp: kp[0], reverse=desc)
+		except TypeError:  # mixed key types
+			have.sort(key=lambda kp: str(kp[0]), reverse=desc)
+		return [pr for _, pr in have] + [pr for k, pr in keyed if k is None]
+
+	def _enter_sort_mode(self) -> None:
+		i = self._active_index()
+		ts = self._tabs[i]
+		keys = [k for k, _ in self._sort_columns(ts)]
+		column = keys.index(ts.sort[0]) if ts.sort else 0
+		self._sort_mode = SortMode(tab=i, column=column, previous=ts.sort)
+		self._render_sort()
+
+	def _sort_mode_key(self, key: str) -> None:
+		mode = self._sort_mode
+		ts = self._tabs[mode.tab]
+		columns = self._sort_columns(ts)
+		desc = ts.sort[1] if ts.sort else False
+		if key in ("left", "right"):
+			mode.column = (mode.column + (1 if key == "right" else -1)) % len(columns)
+			self._set_sort(mode.tab, (columns[mode.column][0], desc))
+		elif key in ("up", "down"):
+			self._set_sort(mode.tab, (columns[mode.column][0], key == "down"))
+		elif key == "0":
+			self._exit_sort_mode(None)
+		elif key == "enter":
+			self._exit_sort_mode(ts.sort)
+		elif key == "escape":
+			self._exit_sort_mode(mode.previous)
+
+	def _exit_sort_mode(self, sort: tuple[str, bool] | None) -> None:
+		i = self._sort_mode.tab
+		self._sort_mode = None
+		self._set_sort(i, sort)
+
+	def _set_sort(self, i: int, sort: tuple[str, bool] | None) -> None:
+		ts = self._tabs[i]
+		ts.sort = sort
+		self._apply_prs(i, ts.source_prs)  # re-sorts; no-op mid-action (next fetch)
+		self._render_sort()
+
+	def _render_sort(self) -> None:
+		# Headers shown in sort mode (or always, per tab); ▲/▼ prefixes the
+		# sort column, the mode's selected column is reversed.
+		for i, ts in enumerate(self._tabs):
+			table = self.query_one(f"#{ts.table_id}", DataTable)
+			mode = self._sort_mode if self._sort_mode and self._sort_mode.tab == i else None
+			table.show_header = ts.config.show_header or mode is not None
+			columns = {k.value: c for k, c in table.columns.items()}
+			for j, (key, label) in enumerate(self._sort_columns(ts)):
+				arrow = ("▼" if ts.sort[1] else "▲") if ts.sort and ts.sort[0] == key else ""
+				columns[key].label = Text(arrow + label, style="reverse" if mode and mode.column == j else "")
+			table._clear_caches()
+			table.refresh()
+		self._render_hotkeys()
+		self._render_countdown()
 
 	def on_key(self, event) -> None:
 		i = self._active_index()

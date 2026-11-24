@@ -1,7 +1,7 @@
 from .abbreviate import short_repo
 from .cmd import exec, merge_pr
 from .extract_author import resolve_author
-from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
+from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, age_key, format_age
 
 
 CHECK_EMOJI = {
@@ -12,6 +12,10 @@ CHECK_EMOJI = {
 	'FAILURE': '🔴',
 	'ERROR': '🔴',
 }
+
+
+# Sort: worst build first when descending.
+CHECK_RANK = {'SUCCESS': 0, 'PENDING': 1, 'EXPECTED': 1, 'SKIPPED': 1, 'FAILURE': 2, 'ERROR': 2}
 
 
 # Reviewed-only PRs (request gone) stay until approved; bot PRs stay
@@ -163,18 +167,21 @@ TAB = TabConfig(
 			label="✓",
 			width=2,
 			render=lambda pr: CHECK_EMOJI.get(pr["checkStatus"], "❔"),
+			sort_key=lambda pr: CHECK_RANK.get(pr["checkStatus"]),
 		),
 		ColumnSpec(
 			key="ref",
 			label="Ref",
 			width=None,
 			render=lambda pr: f"{short_repo(pr['repository']['name'])}#{pr['number']}",
+			sort_key=lambda pr: (short_repo(pr['repository']['name']), pr['number']),
 		),
 		ColumnSpec(
 			key="age",
 			label="Age",
 			width=6,
 			render=lambda pr: format_age(pr["createdAt"]),
+			sort_key=lambda pr: age_key(pr["createdAt"]),
 		),
 	],
 	pr_label=lambda pr: pr['title'],

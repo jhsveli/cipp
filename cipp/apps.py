@@ -481,6 +481,14 @@ def ready(row) -> str:
 	return f"{int(row['ready'] or 0)}/{int(row['desired'])}"
 
 
+def ready_ratio(row) -> float | None:
+	return None if not row["desired"] else (row["ready"] or 0) / row["desired"]
+
+
+def deployed_age(row) -> float | None:
+	return None if row["deployed"] is None else -row["deployed"]
+
+
 def replicas(row) -> str:
 	# Mid-rollout: new-spec pods vs desired.
 	if health(row) == "↻ deploying":
@@ -547,14 +555,14 @@ TAB = TabConfig(
 	pane_ratio=(3, 2),
 	columns=[
 		ColumnSpec(key="stage", label="Env", width=4, render=highlight("stage", lambda r: r["stage"])),
-		ColumnSpec(key="ready", label="Ready", width=7, render=highlight("ready", replicas)),
-		ColumnSpec(key="restarts", label="Restarts", width=8, render=highlight("restarts", restarts)),
-		ColumnSpec(key="cpu", label="CPU", width=4, render=highlight("cpu", lambda r: pct(r["cpu"]))),
-		ColumnSpec(key="mem", label="Mem", width=4, render=highlight("mem", lambda r: pct(r["mem"]))),
-		ColumnSpec(key="rps", label="Req/s", width=6, render=highlight("rps", rps)),
-		ColumnSpec(key="err", label="5xx", width=5, render=highlight("err", lambda r: pct(r["err"]))),
-		ColumnSpec(key="p95", label="p95", width=6, render=highlight("p95", p95)),
-		ColumnSpec(key="deployed", label="Deployed", width=8, render=highlight("deployed", deployed)),
+		ColumnSpec(key="ready", label="Ready", width=7, render=highlight("ready", replicas), sort_key=ready_ratio),
+		ColumnSpec(key="restarts", label="Restarts", width=8, render=highlight("restarts", restarts), sort_key=lambda r: r["restarts"]),
+		ColumnSpec(key="cpu", label="CPU", width=4, render=highlight("cpu", lambda r: pct(r["cpu"])), sort_key=lambda r: r["cpu"]),
+		ColumnSpec(key="mem", label="Mem", width=4, render=highlight("mem", lambda r: pct(r["mem"])), sort_key=lambda r: r["mem"]),
+		ColumnSpec(key="rps", label="Req/s", width=6, render=highlight("rps", rps), sort_key=lambda r: r["rps"]),
+		ColumnSpec(key="err", label="5xx", width=5, render=highlight("err", lambda r: pct(r["err"])), sort_key=lambda r: r["err"]),
+		ColumnSpec(key="p95", label="p95", width=6, render=highlight("p95", p95), sort_key=lambda r: r["p95"]),
+		ColumnSpec(key="deployed", label="Deployed", width=8, render=highlight("deployed", deployed), sort_key=deployed_age),
 		# DB health glyph (✓ / ⚠ / ✗) for apps with a DB; details in the DBs tab.
 		ColumnSpec(key="db", label="DB", width=2, render=db_marker),
 	],

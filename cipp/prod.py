@@ -1,7 +1,7 @@
 from .abbreviate import short_repo
 from .cmd import exec, exec_json, merge_pr
 from .extract_author import extract_authors
-from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, format_age
+from .pr_menu import ActionResult, ActionSpec, ColumnSpec, Safeguard, TabConfig, age_key, format_age
 
 REPO = "sparebank1utvikling/app-configrepo-sb1u"
 AUTHOR = "aws-plattform-image-updater"
@@ -179,6 +179,7 @@ TAB = TabConfig(
 			label="Age",
 			width=6,
 			render=lambda pr: format_age(pr["createdAt"]),
+			sort_key=lambda pr: age_key(pr["createdAt"]),
 		),
 		ColumnSpec(
 			key="app",
