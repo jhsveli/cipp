@@ -57,6 +57,8 @@ The *Reviews* and *Production* tabs are not disjoint by construction — *Review
 
 *Reviews* also unions an `extra_search` `reviewed-by:@me -author:@me` block: GitHub clears the review request on **any** submitted review (incl. `COMMENTED`), so a commented-on PR fell out of `review-requested:@me`. jq tags rows `requested` (in the request search) + `approved` (`reviewDecision == APPROVED` or my latest opinionated review `APPROVED`); `post_process` drops reviewed-only approved PRs — **except** bot-authored (`resolve_author`), kept while open since someone must still merge them. Deduped by id (requested wins), newest first. Status label: `💥 Conflicts` (`mergeable == CONFLICTING`; `UNKNOWN` = GitHub computing lazily, resolves next fetch) trumps author; approved → `✅ author`. `m` blocks on conflicts too.
 
+*Reviews* Ref names awl-monorepo PRs by the one app they touch (`prs.display_repo`, `touched_app`): `apps/team-*/<app>/…` or `apps/internal-apps/<app>/…` → `<app>`, else `apps/<app>/…`. Several apps, a file outside an app (team pom, `libs/`, root), or >100 files (`files(first: 100)` truncated) → `awl-monorepo`. Abbreviated by `short_repo` like other repos.
+
 ### Action
 A keystroke-bound operation on a single PR — *Approve*, *Approve + merge*, *Open in browser*. Modeled by `ActionSpec`. Returns `ActionResult.REMOVE` (the PR should leave the list) or `ActionResult.KEEP` (the PR stays).
 

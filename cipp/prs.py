@@ -45,6 +45,28 @@ def build_failing(pr) -> bool:
 	return pr.get('checkStatus') in ('FAILURE', 'ERROR')
 
 
+MONOREPO = "awl-monorepo"
+GROUP_DIRS = {"internal-apps"}  # + team-*: apps/<group>/<app>/…
+
+
+def touched_app(path: str) -> str | None:
+	parts = path.split("/")
+	if len(parts) < 3 or parts[0] != "apps":
+		return None
+	if parts[1].startswith("team-") or parts[1] in GROUP_DIRS:
+		return parts[2] if len(parts) > 3 else None  # group-level file (e.g. team pom)
+	return parts[1]
+
+
+def display_repo(pr) -> str:
+	# awl-monorepo PRs touching exactly one app are named by that app.
+	name = pr['repository']['name']
+	if name != MONOREPO or pr.get('filesTruncated') or not pr.get('files'):
+		return name
+	apps = {touched_app(f) for f in pr['files']}
+	return apps.pop() if len(apps) == 1 and None not in apps else name
+
+
 def approve(pr):
 	exec(['gh', 'pr', 'review', '--approve', str(pr['number']), '-R', pr['repository']['nameWithOwner']])
 	return ActionResult.REMOVE
@@ -99,6 +121,10 @@ NODE_SELECTION = """
           }
           reviewDecision
           mergeable
+          files(first: 100) {
+            nodes { path }
+            pageInfo { hasNextPage }
+          }
           latestOpinionatedReviews(last: 20) {
             nodes { state author { login } }
           }
@@ -124,6 +150,8 @@ JQ_PROJECTION = """
    approved: (.reviewDecision == "APPROVED"
      or any(.latestOpinionatedReviews.nodes[]; .author.login == $me and .state == "APPROVED")),
    mergeable: .mergeable,
+   files: [.files.nodes[]?.path],
+   filesTruncated: (.files.pageInfo.hasNextPage // false),
    id: .id,
    number: .number,
    state: .state,
@@ -173,8 +201,8 @@ TAB = TabConfig(
 			key="ref",
 			label="Ref",
 			width=None,
-			render=lambda pr: f"{short_repo(pr['repository']['name'])}#{pr['number']}",
-			sort_key=lambda pr: (short_repo(pr['repository']['name']), pr['number']),
+			render=lambda pr: f"{short_repo(display_repo(pr))}#{pr['number']}",
+			sort_key=lambda pr: (short_repo(display_repo(pr)), pr['number']),
 		),
 		ColumnSpec(
 			key="age",
