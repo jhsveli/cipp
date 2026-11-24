@@ -84,7 +84,9 @@ def fetch(notify) -> list[dict]:
 			continue
 		cwd = s.get("cwd") or ""
 		rows.append({
-			"id": s["sessionId"],
+			# One session can run in several processes (resumed in another terminal).
+			"id": f"{s['sessionId']}/{s['pid']}",
+			"sessionId": s["sessionId"],
 			"pid": s["pid"],
 			"name": s.get("name") or s["sessionId"][:8],
 			"cwd": cwd,
@@ -132,7 +134,7 @@ def attach(row):
 
 
 def resume_cmd(row) -> str:
-	return f"cd {shlex.quote(row['cwd'])} && claude --resume {row['id']}"
+	return f"cd {shlex.quote(row['cwd'])} && claude --resume {row['sessionId']}"
 
 
 def copy_resume(row):
@@ -153,7 +155,7 @@ def preview(row) -> str:
 	return f"""**{row['name']}** · {row['kind']} · {row['status']}{f" ({row['waitingFor']})" if row['waitingFor'] else ""} for {since}
 
 - **Dir** `{row['cwd']}`
-- **Session** `{row['id']}`{f" · **job** `{row['jobId']}`" if row['jobId'] else ""} · **pid** {row['pid']} · **version** {row['version'] or '–'}
+- **Session** `{row['sessionId']}`{f" · **job** `{row['jobId']}`" if row['jobId'] else ""} · **pid** {row['pid']} · **version** {row['version'] or '–'}
 - **Started** {format_age(row['startedAt']) + ' ago' if row['startedAt'] else '–'} · **last prompt** {prompt}
 - **Resume** `{resume_cmd(row)}`
 """
